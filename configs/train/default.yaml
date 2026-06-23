@@ -1,0 +1,18 @@
+# Training + P2 ensemble configuration.
+max_epochs: 50
+batch_size: 32
+lr: 3.0e-4
+weight_decay: 0.05
+optimizer: adamw
+precision: bf16-mixed          # good fit for H100/A100
+num_workers: 8
+gradient_clip_val: 1.0
+
+# P2 cheap ensemble: train N members with different seeds; perturb initial state.
+ensemble:
+  n_members: 10
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  ic_perturbation_std: 0.05    # std of noise added to input anomalies per member
+
+# Loss: latitude-weighted; precip and temp weighted/handled separately.
+loss: latitude_weighted_mse

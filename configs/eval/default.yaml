@@ -1,0 +1,15 @@
+# Evaluation configuration. Scored over the India box only.
+metrics:
+  - crps          # primary probabilistic score (the decision-gate metric)
+  - acc           # anomaly correlation coefficient
+  - rmse          # deterministic (ensemble mean)
+  - reliability   # calibration diagram
+
+baselines:
+  - climatology   # predict the seasonal cycle (zero anomaly)
+  - persistence   # carry the latest observed anomaly forward
+
+# Decision gate: must beat climatology AND persistence here.
+gate:
+  lead_week: [3, 4]
+  metric: crps

@@ -1,0 +1,13 @@
+# Main Hydra config. Composes the sub-configs below.
+# Override anything from the CLI, e.g.:
+#   python -m s2s.train model.patch_size=2 train.max_epochs=50
+defaults:
+  - data: era5_india
+  - model: patch_vit
+  - train: default
+  - eval: default
+  - _self_
+
+project: s2s-india-baseline
+seed: 0          # set per-run; ensemble uses a list of seeds (see train config)
+device: cuda

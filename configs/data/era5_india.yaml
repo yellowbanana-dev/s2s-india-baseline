@@ -1,0 +1,50 @@
+# Stage 1 + 2 data configuration.
+source: weatherbench2          # cloud-hosted, pre-regridded ERA5
+resolution_deg: 5.625          # global grid = 32 lat x 64 lon
+
+# WeatherBench2 ERA5, 5.625 deg = 64x32 (no poles), 6-hourly, 1959-2023.
+zarr_path: "gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-64x32_equiangular_conservative.zarr"
+
+# REAL WB2 variable names (verified against the data guide + the store itself).
+# Targets are predicted; predictors are input-only context (remote S2S signal).
+variables:
+  targets:
+    surface:
+      - 2m_temperature                  # Kelvin
+      - total_precipitation_24hr        # accumulated metres/24h (NOT a rate)
+  predictors:
+    surface:
+      - sea_surface_temperature                 # ocean memory (NaN over land)
+      - mean_top_net_long_wave_radiation_flux   # ~ -OLR, MJO convection proxy
+    levels:                             # variable -> pressure levels (hPa)
+      geopotential: [500]
+      u_component_of_wind: [850, 200]   # MJO / monsoon wind fingerprint
+
+# Optional: restrict years during development for fast first runs (null = all).
+dev_years: null
+
+# Input domain is GLOBAL (do not crop — teleconnections). Eval is the India box.
+input_domain: global
+eval_box:                      # lat/lon bounds for scoring only
+  lat_min: 5.0
+  lat_max: 40.0
+  lon_min: 65.0
+  lon_max: 100.0
+
+# Temporal: weekly means, direct prediction of weeks 1-6.
+lead_weeks: [1, 2, 3, 4, 5, 6]
+history_weeks: 2               # weeks of past state fed as input
+
+# Splits by year block. Stats (climatology, norm) come from TRAIN ONLY.
+splits:
+  train: [1979, 2012]
+  val:   [2013, 2017]
+  test:  [2018, 2023]
+  embargo_weeks: 4             # gap between blocks to kill autocorrelation leakage
+
+# Precip is skewed/bounded-at-zero: transform before normalizing.
+precip_transform: log1p
+
+paths:
+  raw: data/raw
+  processed: data/processed

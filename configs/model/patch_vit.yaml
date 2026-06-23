@@ -1,0 +1,9 @@
+# G1 backbone: small patch ViT. Kept deliberately tiny for fast iteration.
+name: patch_vit
+patch_size: 2                  # 32x64 grid -> 16x32 = 512 tokens
+embed_dim: 256
+depth: 6
+num_heads: 8
+mlp_ratio: 4.0
+drop_rate: 0.1                 # also used by MC-dropout ensemble (P2)
+# in/out channels are derived from the data config at build time

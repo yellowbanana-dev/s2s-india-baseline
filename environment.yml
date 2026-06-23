@@ -1,0 +1,30 @@
+name: s2s-baseline
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+dependencies:
+  - python=3.11
+  - pip
+  # --- scientific / data ---
+  - numpy
+  - scipy
+  - pandas
+  - xarray
+  - zarr
+  - dask
+  - netcdf4
+  - matplotlib
+  - cartopy            # map plotting for sanity checks
+  # --- ML ---
+  - pytorch
+  - pytorch-cuda=12.1  # match your driver; remove on CPU-only machines
+  - lightning
+  # --- config / tracking / tooling ---
+  - hydra-core
+  - wandb
+  - pip:
+      - weatherbench2   # data, baselines, metrics
+      - dvc             # data versioning
+      - einops          # tensor reshaping for the ViT
+      - pytest          # data-integrity tests

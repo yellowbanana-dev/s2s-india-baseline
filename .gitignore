@@ -1,0 +1,24 @@
+# data artifacts (versioned with DVC, not git)
+data/raw/*
+data/processed/*
+!data/**/.gitkeep
+*.zarr
+*.nc
+
+# experiment outputs
+outputs/
+wandb/
+lightning_logs/
+checkpoints/
+*.ckpt
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.ipynb_checkpoints/
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,11 @@
+[project]
+name = "s2s-india-baseline"
+version = "0.0.1"
+description = "Subseasonal-to-seasonal baseline (G1 x P2) for the Indian region"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
