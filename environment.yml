@@ -13,6 +13,7 @@ dependencies:
   - xarray
   - zarr
   - dask
+  - gcsfs               # read gs:// zarr stores (WeatherBench2)
   - netcdf4
   - matplotlib
   - cartopy            # map plotting for sanity checks

@@ -17,6 +17,7 @@ __pycache__/
 *.py[cod]
 .venv/
 .ipynb_checkpoints/
+*.egg-info/
 
 # os / editor
 .DS_Store

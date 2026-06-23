@@ -46,5 +46,5 @@ splits:
 precip_transform: log1p
 
 paths:
-  raw: data/raw
-  processed: data/processed
+  raw: /Datastorage/scdlds_bharat/s2s/data/raw
+  processed: /Datastorage/scdlds_bharat/s2s/data/processed

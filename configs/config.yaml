@@ -11,3 +11,10 @@ defaults:
 project: s2s-india-baseline
 seed: 0          # set per-run; ensemble uses a list of seeds (see train config)
 device: cuda
+
+paths:
+  checkpoints: /Datastorage/scdlds_bharat/s2s/checkpoints
+
+hydra:
+  run:
+    dir: /Datastorage/scdlds_bharat/s2s/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
