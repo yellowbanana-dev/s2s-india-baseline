@@ -13,3 +13,7 @@ baselines:
 gate:
   lead_week: [3, 4]
   metric: crps
+
+# Path to a trained Lightning checkpoint to evaluate (scripts/03_evaluate.py).
+# Set via override, e.g. eval.checkpoint=/path/to/epoch=4-val_loss=0.5864.ckpt
+checkpoint: null

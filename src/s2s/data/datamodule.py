@@ -16,6 +16,7 @@ import xarray as xr
 from torch.utils.data import DataLoader, Dataset
 
 from s2s.data.assemble import assemble_arrays, in_out_channels
+from s2s.data.assemble import target_vars as _target_vars
 from s2s.data.climatology import fit_normalizer
 from s2s.data.windows import daily_to_weekly_mean
 
@@ -53,8 +54,10 @@ class S2SDataModule(L.LightningDataModule):
         super().__init__()
         self.cfg = cfg
         self.in_channels, self.out_channels = in_out_channels(cfg)
+        self.target_vars = _target_vars(cfg)
         self.grid = None
         self.latitude = None
+        self.lon = None
         self.train_dataset = None
         self.val_dataset = None
         self.test_dataset = None
@@ -85,6 +88,7 @@ class S2SDataModule(L.LightningDataModule):
         standardized = standardized.assign_coords(split=("time", split.values))
 
         self.latitude = standardized.latitude.values
+        self.lon = standardized.longitude.values
         self.grid = (standardized.sizes["latitude"], standardized.sizes["longitude"])
 
         arrays = {}
