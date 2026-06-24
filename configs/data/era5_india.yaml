@@ -15,7 +15,9 @@ variables:
   predictors:
     surface:
       - sea_surface_temperature                 # ocean memory (NaN over land)
-      - mean_top_net_long_wave_radiation_flux   # ~ -OLR, MJO convection proxy
+      # mean_top_net_long_wave_radiation_flux dropped: confirmed 100% NaN across
+      # the ENTIRE WB2 store at this resolution (verified, not a pipeline bug --
+      # see Phase-A eval layer session notes). Re-add if/when WB2 fixes it upstream.
     levels:                             # variable -> pressure levels (hPa)
       geopotential: [500]
       u_component_of_wind: [850, 200]   # MJO / monsoon wind fingerprint
