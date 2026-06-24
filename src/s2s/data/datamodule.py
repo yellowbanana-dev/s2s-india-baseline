@@ -58,6 +58,7 @@ class S2SDataModule(L.LightningDataModule):
         self.grid = None
         self.latitude = None
         self.lon = None
+        self.normalizer = None  # TRAIN-only per-variable {mean, std}; physical <-> standardized
         self.train_dataset = None
         self.val_dataset = None
         self.test_dataset = None
@@ -83,6 +84,7 @@ class S2SDataModule(L.LightningDataModule):
 
         train_daily = daily_anom.sel(time=split == "train").drop_vars("split")
         normalizer = fit_normalizer(train_daily, self.cfg)
+        self.normalizer = normalizer  # exposed so eval can un-standardize back to physical units
 
         standardized = _standardize(daily_anom.drop_vars("split"), normalizer)
         standardized = standardized.assign_coords(split=("time", split.values))

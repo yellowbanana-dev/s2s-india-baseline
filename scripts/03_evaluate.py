@@ -5,6 +5,14 @@ mosaic-corner IC perturbation (ADR 0001), scores CRPS over the India box per
 lead week against the climatology baseline, and reports the decision gate
 (configs/eval/default.yaml: gate.lead_week, gate.metric) as PASS/FAIL.
 
+UNITS: the datamodule trains/predicts in train-standardized space, but
+scripts/02_run_baselines.py's climatology table (the number to beat) is in
+PHYSICAL units straight off daily_anom.zarr. Model predictions and truth are
+converted back to physical units here (using the SAME train mean/std the
+datamodule used to standardize) before CRPS is computed, so all three
+quantities -- model ensemble, truth, climatology -- live in one consistent
+space and the printed numbers are directly comparable to Stage 2's table.
+
 THIS IS A SMOKE TEST OF THE EVAL PATH, NOT THE REAL GATE: the real gate needs a
 full-record-trained ensemble of independently-trained members, not IC
 perturbation around a single few-epoch dev-subset checkpoint. A FAIL here is
@@ -75,11 +83,27 @@ def main(cfg: DictConfig) -> None:
     n_samples = x.shape[0]
     print(f"Evaluating ensemble: n test samples={n_samples}  ensemble members={n_members}")
 
-    preds = ensemble.forecast(x).numpy()  # (M, N, lead, C_out, lat, lon)
+    preds = ensemble.forecast(x).numpy()  # (M, N, lead, C_out, lat, lon), STANDARDIZED
 
     lats, lons = dm.latitude, dm.lon
     lead_weeks = list(cfg.data.lead_weeks)
     out_vars = dm.target_vars
+
+    # Un-standardize model output + truth back to PHYSICAL units (train mean/std),
+    # so they're comparable to the climatology forecast (which is physical zero by
+    # construction -- see s2s.eval.baselines.climatology_forecast) and to Stage 2's
+    # baseline table. Channel axes: y_true (N, lead, C, lat, lon) -> axis 2;
+    # preds (M, N, lead, C, lat, lon) -> axis 3.
+    target_mean = np.array([dm.normalizer[v]["mean"] for v in out_vars], dtype=np.float32)
+    target_std = np.array([dm.normalizer[v]["std"] for v in out_vars], dtype=np.float32)
+
+    def _to_physical(arr: np.ndarray, channel_axis: int) -> np.ndarray:
+        shape = [1] * arr.ndim
+        shape[channel_axis] = len(out_vars)
+        return arr * target_std.reshape(shape) + target_mean.reshape(shape)
+
+    y_true = _to_physical(y_true, channel_axis=2)
+    preds = _to_physical(preds, channel_axis=3)
 
     rows = []
     for ci, var in enumerate(out_vars):
