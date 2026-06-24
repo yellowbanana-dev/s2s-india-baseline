@@ -15,7 +15,7 @@ from pathlib import Path
 import hydra
 import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint
-from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from omegaconf import DictConfig
 
 from s2s.data.datamodule import S2SDataModule
@@ -51,11 +51,16 @@ def main(cfg: DictConfig) -> None:
     if not fast_dev_run:
         ckpt_dir = Path(cfg.paths.checkpoints) / f"seed_{cfg.seed}"
         ckpt_dir.mkdir(parents=True, exist_ok=True)
-        logger = WandbLogger(
-            project=cfg.project,
-            save_dir=os.environ.get("WANDB_DIR", str(ckpt_dir)),
-            offline=os.environ.get("WANDB_MODE") == "offline",
-        )
+        # CSVLogger gives a plain per-epoch metrics.csv alongside W&B -- handy for
+        # reading the loss curve back without touching the W&B binary log format.
+        logger = [
+            WandbLogger(
+                project=cfg.project,
+                save_dir=os.environ.get("WANDB_DIR", str(ckpt_dir)),
+                offline=os.environ.get("WANDB_MODE") == "offline",
+            ),
+            CSVLogger(save_dir=str(ckpt_dir), name="csv"),
+        ]
         callbacks.append(
             ModelCheckpoint(dirpath=str(ckpt_dir), filename="{epoch}-{val_loss:.4f}", monitor="val_loss", save_last=True)
         )
