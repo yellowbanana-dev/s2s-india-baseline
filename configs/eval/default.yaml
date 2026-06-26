@@ -1,19 +1,44 @@
 # Evaluation configuration. Scored over the India box only.
 metrics:
-  - crps          # primary probabilistic score (the decision-gate metric)
-  - acc           # anomaly correlation coefficient
-  - rmse          # deterministic (ensemble mean)
-  - reliability   # calibration diagram
+  - crpss         # PRIMARY (Phase B): skill vs PROBABILISTIC climatology (honest bar)
+  - crps          # raw CRPS (model + both clim references) for transparency
+  - acc           # deterministic anomaly correlation (ensemble mean)
+  - rmse          # deterministic RMSE (ensemble mean)
+  - rank_histogram   # Talagrand calibration (detects under-dispersion)
+  - reliability   # reliability diagrams for the events below
 
 baselines:
-  - climatology   # predict the seasonal cycle (zero anomaly)
-  - persistence   # carry the latest observed anomaly forward
+  - climatology_det   # deterministic zero-anomaly (Phase-A reference; CRPS==MAE)
+  - climatology_prob  # week-of-year-windowed pooled-train ensemble (Phase-B honest bar)
+  - persistence       # carry the latest observed anomaly forward
 
-# Decision gate: must beat climatology AND persistence here.
+# Probabilistic-climatology reference pooling (phase-b-plan; ADR-0001 refinement).
+clim_woy_window: 3   # +/- weeks of year pooled into the climatological ensemble
+
+# Reliability-diagram events. Relative events live in anomaly space; absolute
+# events are evaluated on RECONSTRUCTED weekly-mean PHYSICAL fields (train clim
+# added back; precip un-log1p'd). NOTE: these are WEEKLY-MEAN exceedances, not
+# daily extremes -- 40 C / 50 mm/day applied to the weekly mean.
+reliability:
+  n_bins: 10
+  events:
+    - {name: t2m_anom_positive,    variable: 2m_temperature,           space: anomaly,  comparison: gt, threshold: 0.0}
+    - {name: precip_anom_positive, variable: total_precipitation_24hr, space: anomaly,  comparison: gt, threshold: 0.0}
+    # India-context absolute thresholds (weekly-mean physical):
+    - {name: extreme_heat_40C,     variable: 2m_temperature,           space: physical, comparison: gt, threshold: 313.15}  # 40 C in Kelvin
+    - {name: heavy_rain_50mm,      variable: total_precipitation_24hr, space: physical, comparison: gt, threshold: 0.050}   # 50 mm/day in m/24h
+
+# Decision gate: now scored against the PROBABILISTIC climatology (CRPSS > 0),
+# the honest Phase-B bar -- stricter than Phase A's deterministic gate.
 gate:
   lead_week: [3, 4]
-  metric: crps
+  metric: crpss
+  reference: climatology_prob
+  threshold: 0.0   # CRPSS must exceed this to PASS
 
 # Path to a trained Lightning checkpoint to evaluate (scripts/03_evaluate.py).
-# Set via override, e.g. eval.checkpoint=/path/to/epoch=4-val_loss=0.5864.ckpt
+# Set via override, e.g. eval.checkpoint=/path/to/epoch=21-val_loss=0.4185.ckpt
 checkpoint: null
+
+# Where the eval writes metrics.csv + rank-hist/reliability PNGs.
+results_dir: results/eval

@@ -68,3 +68,83 @@ def test_persistence_forecast_holds_latest_value():
     assert out.sizes["lead"] == 3
     for lead in cfg.data.lead_weeks:
         np.testing.assert_allclose(out["2m_temperature"].sel(lead=lead).values, values)
+
+
+# --------------------------------------------------------------------------- #
+# Phase-B eval upgrade: CRPSS, calibration (rank histogram / spread-error),    #
+# reliability, week-of-year climatology pooling. Hand-verified, numpy API.     #
+# --------------------------------------------------------------------------- #
+
+from s2s.eval.baselines import climatology_woy_ensemble
+from s2s.eval.metrics import (
+    crpss,
+    event_probability,
+    rank_histogram,
+    reliability_curve,
+    spread_error_ratio,
+)
+
+
+def test_crpss_known_value():
+    assert abs(crpss(0.5, 1.0) - 0.5) < 1e-12       # 1 - 0.5/1.0
+    assert abs(crpss(0.8, 0.8) - 0.0) < 1e-12       # equal -> zero skill
+    assert crpss(1.2, 1.0) < 0.0                    # worse -> negative (precip case)
+    assert np.isnan(crpss(0.5, 0.0))                # guard against /0
+
+
+def test_rank_histogram_calibrated_is_flat():
+    rng = np.random.default_rng(0)
+    M, N = 20, 4000
+    members = rng.normal(size=(M, N))
+    truth = rng.normal(size=N)               # truth ~ same dist as members
+    counts = rank_histogram(members, truth)
+    assert counts.shape == (M + 1,)
+    freq = counts / counts.sum()
+    assert freq.max() < 2.0 / (M + 1)        # no bin wildly over uniform
+    assert freq.min() > 0.3 / (M + 1)
+
+
+def test_rank_histogram_underdispersed_is_u_shaped():
+    rng = np.random.default_rng(1)
+    M, N = 20, 4000
+    members = 0.1 * rng.normal(size=(M, N))  # tight members
+    truth = rng.normal(size=N)               # wide truth
+    counts = rank_histogram(members, truth)
+    edges = counts[0] + counts[-1]
+    middle = counts[1:-1].sum()
+    assert edges > middle                    # U-shape: ends dominate interior
+
+
+def test_spread_error_ratio_underdispersed_below_one():
+    rng = np.random.default_rng(2)
+    M = 15
+    members = 0.01 * rng.normal(size=(M, 50))
+    truth = np.ones(50)
+    assert spread_error_ratio(members, truth) < 0.5
+
+
+def test_reliability_curve_perfect_event():
+    p = np.array([0.0, 0.0, 1.0, 1.0])
+    y = np.array([0.0, 0.0, 1.0, 1.0])
+    centers, obs, counts = reliability_curve(p, y, n_bins=10)
+    assert np.isnan(obs[5])                  # empty middle bin
+    assert obs[0] == 0.0
+    assert obs[-1] == 1.0
+
+
+def test_event_probability_fraction():
+    members = np.array([0.0, 2.0, 4.0, 6.0])
+    assert abs(float(event_probability(members, 3.0, "gt")) - 0.5) < 1e-12
+    assert abs(float(event_probability(members, 3.0, "lt")) - 0.5) < 1e-12
+
+
+def test_climatology_woy_window_selects_in_season():
+    time = pd.date_range("2001-01-01", periods=104, freq="7D")
+    da = xr.DataArray(np.arange(104, dtype=float), dims=["time"], coords={"time": time})
+    ens = climatology_woy_ensemble(da, target_woy=26, window=2)
+    assert ens.sizes["member"] > 0
+    member_times = ens["member"].values
+    woy = xr.DataArray(member_times).dt.isocalendar().week.values
+    d = np.abs(woy - 26)
+    d = np.minimum(d, 52 - d)
+    assert (d <= 2).all()                    # every pooled member in-season

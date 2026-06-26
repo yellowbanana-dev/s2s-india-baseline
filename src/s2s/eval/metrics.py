@@ -91,3 +91,109 @@ def reliability(forecast_members: np.ndarray, truth: np.ndarray, n_bins: int = 1
         threshold = sorted_f[idx]
         observed[i] = np.mean(o <= threshold)
     return nominal, observed
+
+
+def crpss(crps_model: float, crps_reference: float) -> float:
+    """CRPS skill score (higher better; >0 == model beats the reference).
+
+        CRPSS = 1 - CRPS_model / CRPS_reference
+
+    Phase-B's honest bar uses a *probabilistic* climatology reference (a
+    week-of-year-windowed pool of train weekly anomalies), unlike Phase A's
+    deterministic zero-anomaly climatology (CRPS == MAE). Pure ratio of two
+    already-reduced scalars.
+    """
+    if crps_reference == 0 or not np.isfinite(crps_reference):
+        return float("nan")
+    return float(1.0 - crps_model / crps_reference)
+
+
+def rank_histogram(forecast_members: np.ndarray, truth: np.ndarray) -> np.ndarray:
+    """Talagrand rank histogram counts (ensemble calibration; flat == calibrated).
+
+    forecast_members: (M, ...)   truth: (...)
+    For each verification point the observation's rank among the M sorted members
+    falls in one of M+1 bins; ties broken randomly (fixed seed) so a calibrated
+    ensemble is flat. A U-shape => UNDER-dispersed (the Phase-A failure); a
+    centre-heavy dome => over-dispersed. Returns length-(M+1) counts over all
+    finite points.
+    """
+    f = np.asarray(forecast_members, dtype=float)
+    o = np.asarray(truth, dtype=float)
+    m = f.shape[0]
+    f_flat = f.reshape(m, -1).T          # (P, M)
+    o_flat = o.reshape(-1)               # (P,)
+    finite = np.isfinite(o_flat) & np.isfinite(f_flat).all(axis=1)
+    f_flat, o_flat = f_flat[finite], o_flat[finite]
+    rng = np.random.default_rng(0)       # deterministic tie-breaking
+    below = (f_flat < o_flat[:, None]).sum(axis=1)
+    ties = (f_flat == o_flat[:, None]).sum(axis=1)
+    rank = below + (rng.random(len(o_flat)) * (ties + 1)).astype(int)
+    rank = np.clip(rank, 0, m)
+    return np.bincount(rank, minlength=m + 1)[: m + 1]
+
+
+def spread_error_ratio(forecast_members: np.ndarray, truth: np.ndarray) -> float:
+    """Spread-skill ratio (calibrated ~ 1; <1 under-dispersed, >1 over-dispersed).
+
+    ratio = sqrt(((M+1)/M) * mean ensemble variance) / RMSE(ensemble mean).
+    A scalar summary of the rank histogram. Latitude weighting (if wanted) must be
+    pre-applied by the caller, consistent with rmse() above.
+    """
+    f = np.asarray(forecast_members, dtype=float)
+    o = np.asarray(truth, dtype=float)
+    m = f.shape[0]
+    ens_mean = f.mean(axis=0)
+    ens_var = f.var(axis=0, ddof=1) if m > 1 else np.zeros_like(ens_mean)
+    fm = ens_mean.ravel(); ov = o.ravel(); vv = ens_var.ravel()
+    mask = np.isfinite(fm) & np.isfinite(ov) & np.isfinite(vv)
+    fm, ov, vv = fm[mask], ov[mask], vv[mask]
+    if fm.size == 0:
+        return float("nan")
+    rmse_mean = np.sqrt(np.mean((fm - ov) ** 2))
+    if rmse_mean == 0:
+        return float("nan")
+    spread = np.sqrt(((m + 1) / m) * np.mean(vv))
+    return float(spread / rmse_mean)
+
+
+def reliability_curve(prob_forecast: np.ndarray, event_truth: np.ndarray, n_bins: int = 10):
+    """Reliability-diagram points for a binary event (forecast prob vs obs freq).
+
+    prob_forecast : ensemble probability of the event per point (0..1), any shape.
+    event_truth   : 0/1 observed event per point, same shape.
+    Returns (bin_centers, observed_freq, bin_counts) over n_bins equal-width bins;
+    perfectly reliable => observed_freq == bin_centers. NaN where a bin is empty.
+    Used for P(anomaly>0), P(upper tercile), and the India-context absolute
+    weekly-mean events P(T2m>40C), P(precip>50mm/day).
+    """
+    p = np.asarray(prob_forecast, dtype=float).reshape(-1)
+    y = np.asarray(event_truth, dtype=float).reshape(-1)
+    finite = np.isfinite(p) & np.isfinite(y)
+    p, y = p[finite], y[finite]
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    idx = np.clip(np.digitize(p, edges[1:-1]), 0, n_bins - 1)
+    obs = np.full(n_bins, np.nan)
+    counts = np.zeros(n_bins, dtype=int)
+    for b in range(n_bins):
+        sel = idx == b
+        counts[b] = int(sel.sum())
+        if counts[b]:
+            obs[b] = float(y[sel].mean())
+    return centers, obs, counts
+
+
+def event_probability(forecast_members: np.ndarray, threshold: float, comparison: str = "gt") -> np.ndarray:
+    """Ensemble probability the field exceeds (gt) or falls below (lt) a threshold.
+
+    forecast_members: (M, ...) -> returns (...) fraction of members satisfying it.
+    """
+    f = np.asarray(forecast_members, dtype=float)
+    if comparison == "gt":
+        hit = f > threshold
+    elif comparison == "lt":
+        hit = f < threshold
+    else:
+        raise ValueError(f"unknown comparison: {comparison!r}")
+    return hit.mean(axis=0)
