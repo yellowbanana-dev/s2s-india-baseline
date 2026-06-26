@@ -209,3 +209,26 @@ def test_runs_without_flash_attn(monkeypatch):
 
         if original_prim is not None:
             sys.modules["s2s.models.mosaic.primitives"] = original_prim
+
+
+# --------------------------------------------------------------------------- #
+# Regression: the Mosaic HEALPix interpolation grid must use the TRUE data     #
+# longitudes (WeatherBench2 5.625deg = arange(64)*5.625), never a wrong-spaced #
+# default. A mismatch silently degrades eval (caught in Phase-B step-3 review). #
+# --------------------------------------------------------------------------- #
+
+import numpy as _np
+
+
+def test_lit_longitude_fallback_is_true_wb2_grid():
+    """If longitude isn't passed, lit.py must fall back to the real 5.625deg grid,
+    NOT linspace(0, 358.125, 64) which has 5.684deg spacing."""
+    import inspect
+    from s2s.models import lit as _lit
+    src = inspect.getsource(_lit)
+    assert "np.arange(64) * 5.625" in src, "lit.py longitude fallback must be arange(64)*5.625"
+    assert "linspace(0.0, 358.125, 64)" not in src, "old wrong-spaced default must be gone"
+    # And the true grid ends at 354.375, not 358.125.
+    true_grid = _np.arange(64) * 5.625
+    assert abs(true_grid[-1] - 354.375) < 1e-6
+    assert abs(true_grid[1] - true_grid[0] - 5.625) < 1e-6

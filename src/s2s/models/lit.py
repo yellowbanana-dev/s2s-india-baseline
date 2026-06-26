@@ -38,7 +38,7 @@ class S2SLitModule(L.LightningModule):
         self.model = _build_backbone(
             in_channels, out_channels, lead, cfg,
             np.asarray(latitude),
-            np.asarray(longitude) if longitude is not None else np.linspace(0.0, 358.125, 64),
+            np.asarray(longitude) if longitude is not None else (np.arange(64) * 5.625),
         )
         self.register_buffer("lat_weight", _lat_weights(np.asarray(latitude)).view(1, 1, 1, -1, 1))
 

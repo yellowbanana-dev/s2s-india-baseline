@@ -143,7 +143,8 @@ def main(cfg: DictConfig) -> None:
         out_channels=dm.out_channels,
         lead=lead,
         latitude=dm.latitude,
-        cfg=cfg,
+        longitude=dm.lon,  # REQUIRED for model=mosaic: HEALPix interp grid must match
+        cfg=cfg,           # the data's true longitudes (dm.lon), not lit.py's fallback.
     )
     device = torch.device(
         cfg.get("device", "cuda") if torch.cuda.is_available() else "cpu"
