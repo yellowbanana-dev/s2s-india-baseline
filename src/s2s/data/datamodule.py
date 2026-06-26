@@ -1,10 +1,17 @@
 """Stage 2c - Lightning DataModule / Dataset (task #7).
 
 Reads the already-built data/processed/daily_anom.zarr (Stage 2, scripts/01_build_dataset.py),
-standardizes every variable using TRAIN-only mean/std (cardinal rule), aggregates
-to weekly means, and hands off to s2s.data.assemble for the actual
-(input, target) tensor construction. Everything is loaded eagerly into numpy --
-dev-subset sizes are small; a full-record run would need a lazy rewrite.
+standardizes every variable using TRAIN-only mean/std (cardinal rule), and builds
+per-sample tensors:
+
+  train / val  -- daily-strided rolling 7-day windows (daily_init_weekly_windows).
+                  Stride controlled by cfg.data.train_stride_days (default 1 => ~7x denser).
+                  Denser windows DO NOT change normalizer stats -- stats are fit on raw
+                  daily train anomalies before any windowing.
+  test         -- W-MON weekly bins (assemble_arrays), kept for eval comparability.
+
+Everything is loaded eagerly into numpy -- dev-subset sizes are small;
+a full-record run would need a lazy rewrite.
 """
 from __future__ import annotations
 
@@ -18,7 +25,7 @@ from torch.utils.data import DataLoader, Dataset
 from s2s.data.assemble import assemble_arrays, in_out_channels
 from s2s.data.assemble import target_vars as _target_vars
 from s2s.data.climatology import fit_normalizer
-from s2s.data.windows import daily_to_weekly_mean
+from s2s.data.windows import daily_init_weekly_windows, daily_to_weekly_mean
 
 _SPLITS = ("train", "val", "test")
 
@@ -82,9 +89,10 @@ class S2SDataModule(L.LightningDataModule):
         daily_anom = xr.open_zarr(anom_path)
         split = daily_anom["split"].astype(str)
 
+        # Normalizer fit on raw TRAIN daily anomalies -- denser windowing must not alter this.
         train_daily = daily_anom.sel(time=split == "train").drop_vars("split")
         normalizer = fit_normalizer(train_daily, self.cfg)
-        self.normalizer = normalizer  # exposed so eval can un-standardize back to physical units
+        self.normalizer = normalizer
 
         standardized = _standardize(daily_anom.drop_vars("split"), normalizer)
         standardized = standardized.assign_coords(split=("time", split.values))
@@ -93,11 +101,18 @@ class S2SDataModule(L.LightningDataModule):
         self.lon = standardized.longitude.values
         self.grid = (standardized.sizes["latitude"], standardized.sizes["longitude"])
 
+        stride = int(getattr(self.cfg.data, "train_stride_days", 1))
+
         arrays = {}
         for name in _SPLITS:
             sub = standardized.sel(time=standardized.split == name).drop_vars("split")
-            weekly = daily_to_weekly_mean(sub)
-            arrays[name] = assemble_arrays(weekly, self.cfg)
+            if name in ("train", "val"):
+                # Dense daily-strided windows for better coverage without leakage.
+                arrays[name] = daily_init_weekly_windows(sub, self.cfg, stride_days=stride)
+            else:
+                # W-MON bins kept for test so eval metrics stay directly comparable.
+                weekly = daily_to_weekly_mean(sub)
+                arrays[name] = assemble_arrays(weekly, self.cfg)
 
         self.train_dataset = S2SDataset(arrays["train"])
         self.val_dataset = S2SDataset(arrays["val"])

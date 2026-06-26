@@ -2,11 +2,16 @@
 max_epochs: 50
 batch_size: 32
 lr: 3.0e-4
-weight_decay: 0.05
+# Bumped from 0.05 to 0.1: denser-data ViT benefits from stronger decoupled decay.
+weight_decay: 0.1
 optimizer: adamw
 precision: bf16-mixed          # good fit for H100/A100
 num_workers: 8
 gradient_clip_val: 1.0
+
+# LR schedule: linear warmup then cosine decay to min_lr.
+warmup_epochs: 2
+min_lr: 1.0e-6
 
 # P2 cheap ensemble: train N members with different seeds; perturb initial state.
 ensemble:

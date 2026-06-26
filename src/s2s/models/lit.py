@@ -7,6 +7,8 @@ are more of them.
 """
 from __future__ import annotations
 
+import math
+
 import lightning as L
 import numpy as np
 import torch
@@ -46,6 +48,28 @@ class S2SLitModule(L.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(
-            self.parameters(), lr=float(self.cfg.train.lr), weight_decay=float(self.cfg.train.weight_decay)
+        opt = torch.optim.AdamW(
+            self.parameters(),
+            lr=float(self.cfg.train.lr),
+            weight_decay=float(self.cfg.train.weight_decay),
         )
+
+        warmup = int(self.cfg.train.warmup_epochs)
+        max_ep = int(self.cfg.train.max_epochs)
+        min_lr = float(self.cfg.train.min_lr)
+        base_lr = float(self.cfg.train.lr)
+
+        def _lr_lambda(epoch: int) -> float:
+            # Linear warmup: ramp from 1/warmup to 1.0 over `warmup` epochs.
+            if epoch < warmup:
+                return (epoch + 1) / warmup
+            # Cosine decay from base_lr to min_lr over remaining epochs.
+            progress = (epoch - warmup) / max(1, max_ep - warmup)
+            cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+            return (min_lr + cosine * (base_lr - min_lr)) / base_lr
+
+        scheduler = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda)
+        return {
+            "optimizer": opt,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"},
+        }

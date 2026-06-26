@@ -4,6 +4,11 @@ Single source of truth for channel order/count, so the model's in/out_channels
 and the dataset's actual tensors can never silently disagree. Targets are also
 fed back as input history (the model gets to see what it's persisting from),
 followed by predictors, followed by one cyclical day-of-year channel.
+
+pack_windows() is the shared packing kernel used by both:
+  - assemble_arrays()             : W-MON weekly bins  (test split / eval)
+  - daily_init_weekly_windows()   : daily-strided rolling 7-day means (train/val)
+Both paths produce tensors with identical shape and channel order.
 """
 from __future__ import annotations
 
@@ -39,6 +44,34 @@ def in_out_channels(cfg) -> tuple[int, int]:
     return in_channels, out_channels
 
 
+def pack_windows(
+    in_hist: np.ndarray,
+    out_leads: np.ndarray,
+    doy_cos_vals: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Pack pre-built per-sample history and lead windows into model-ready tensors.
+
+    in_hist:      (N, history_weeks, n_in_vars, lat, lon)  — oldest week first
+    out_leads:    (N, n_lead_weeks,  n_out_vars, lat, lon)
+    doy_cos_vals: (N,) float32 cosine day-of-year at each init time
+
+    Returns:
+      inputs  (N, history_weeks*n_in_vars + 1, lat, lon)  float32
+      targets (N, n_lead_weeks, n_out_vars, lat, lon)      float32
+
+    Channel order: [oldest_week_var0, oldest_week_var1, ..., newest_week_var0, ...] + doy_cos.
+    This is the ONLY place that defines the channel layout; in_out_channels() counts it.
+    """
+    N, hw, niv, lat, lon = in_hist.shape
+    # (N, history_weeks, n_in_vars, lat, lon) -> (N, history_weeks*n_in_vars, lat, lon)
+    flat_hist = in_hist.reshape(N, hw * niv, lat, lon).astype(np.float32)
+    inputs = np.empty((N, hw * niv + 1, lat, lon), dtype=np.float32)
+    inputs[:, : hw * niv] = flat_hist
+    inputs[:, -1] = doy_cos_vals[:, None, None]  # broadcast over lat, lon
+    targets = np.asarray(out_leads, dtype=np.float32)
+    return inputs, targets
+
+
 def assemble_arrays(weekly: xr.Dataset, cfg) -> dict:
     """Build (inputs, targets) numpy arrays from a weekly-mean anomaly Dataset.
 
@@ -71,7 +104,6 @@ def assemble_arrays(weekly: xr.Dataset, cfg) -> dict:
             f"and max lead={max_lead}"
         )
     valid_idx = np.arange(lo, hi)
-    n_samples = len(valid_idx)
     lat, lon = weekly.sizes["latitude"], weekly.sizes["longitude"]
 
     def _tlatlon(name):
@@ -79,26 +111,22 @@ def assemble_arrays(weekly: xr.Dataset, cfg) -> dict:
 
     in_stack = np.nan_to_num(
         np.stack([_tlatlon(v) for v in in_vars], axis=0), nan=0.0
-    )  # (n_in_vars, time, lat, lon)
-    out_stack = np.stack([_tlatlon(v) for v in out_vars], axis=0)  # (n_out_vars, time, lat, lon)
+    )  # (n_in_vars, T, lat, lon)
+    out_stack = np.stack([_tlatlon(v) for v in out_vars], axis=0)  # (n_out_vars, T, lat, lon)
 
     doy = weekly.time.dt.dayofyear.values.astype(np.float64)
     doy_cos = np.cos(2 * np.pi * doy / 365.25).astype(np.float32)
 
-    n_in_vars = len(in_vars)
-    inputs = np.empty((n_samples, history_weeks * n_in_vars + 1, lat, lon), dtype=np.float32)
-    targets = np.empty((n_samples, len(lead_weeks), len(out_vars), lat, lon), dtype=np.float32)
+    # Vectorised extraction: build (N, history_weeks, n_in_vars, lat, lon) in one shot.
+    # Offsets: 0 = oldest week, history_weeks-1 = most recent (same as the old t-hw+1..t+1 slice)
+    hist_offsets = np.arange(history_weeks)  # [0, 1, ..., hw-1]
+    hist_idx = valid_idx[:, None] - (history_weeks - 1) + hist_offsets[None, :]  # (N, hw)
+    # in_stack[:, hist_idx] -> (n_in_vars, N, hw, lat, lon) -> transpose -> (N, hw, n_in_vars, lat, lon)
+    in_hist = in_stack[:, hist_idx, :, :].transpose(1, 2, 0, 3, 4)
 
-    for i, t in enumerate(valid_idx):
-        hist = in_stack[:, t - history_weeks + 1 : t + 1, :, :]  # (n_in_vars, history_weeks, lat, lon)
-        hist = hist.transpose(1, 0, 2, 3).reshape(history_weeks * n_in_vars, lat, lon)
-        inputs[i, : history_weeks * n_in_vars] = hist
-        inputs[i, -1] = doy_cos[t]
-        for li, lead in enumerate(lead_weeks):
-            targets[i, li] = out_stack[:, t + lead, :, :]
+    lead_idx = valid_idx[:, None] + np.array(lead_weeks)[None, :]  # (N, n_leads)
+    # out_stack[:, lead_idx] -> (n_out_vars, N, n_leads, lat, lon) -> (N, n_leads, n_out_vars, lat, lon)
+    out_leads = out_stack[:, lead_idx, :, :].transpose(1, 2, 0, 3, 4)
 
-    return {
-        "inputs": inputs,
-        "targets": targets,
-        "time": weekly.time.values[valid_idx],
-    }
+    inputs, targets = pack_windows(in_hist, out_leads, doy_cos[valid_idx])
+    return {"inputs": inputs, "targets": targets, "time": weekly.time.values[valid_idx]}

@@ -44,6 +44,10 @@ splits:
   test:  [2018, 2023]
   embargo_weeks: 4             # gap between blocks to kill autocorrelation leakage
 
+# Denser train/val sampling: stride in days for daily_init_weekly_windows.
+# 1 => every calendar day is an init date (~7x more samples than W-MON).
+train_stride_days: 1
+
 # Precip is skewed/bounded-at-zero: transform before normalizing.
 precip_transform: log1p
 
