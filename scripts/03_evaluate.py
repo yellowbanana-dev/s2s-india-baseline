@@ -105,7 +105,13 @@ def _reconstruct_physical(anom_phys, clim_doy, var, target_times):
     un-log1p'd after adding the climatology back (clim lives in log1p space).
     """
     doy = pd.DatetimeIndex(target_times).dayofyear.values
-    clim_sel = clim_doy.sel(dayofyear=xr.DataArray(doy, dims="sample")).values  # (n, lat, lon)
+    # climatology.zarr stores (dayofyear, longitude, latitude); transpose to
+    # (sample, latitude, longitude) to match assemble_arrays' lat-first layout.
+    clim_sel = (
+        clim_doy.sel(dayofyear=xr.DataArray(doy, dims="sample"))
+        .transpose("sample", "latitude", "longitude")
+        .values
+    )  # (n, lat, lon)
     if anom_phys.ndim == 4:        # (m, n, lat, lon)
         phys = anom_phys + clim_sel[np.newaxis, ...]
     else:                          # (n, lat, lon)
