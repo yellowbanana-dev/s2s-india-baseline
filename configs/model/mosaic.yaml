@@ -37,5 +37,8 @@ sparse_every: 0             # ≤0 → all blocks run block_attn_only=True (no o
 qkv_compress_ratio: 1       # no QKV compression
 no_compression: false
 
+# Regularisation — matches patch-ViT drop_rate=0.1.
+drop_rate: 0.1
+
 # Noise-injection FFN (cSwiGLU + NoiseGenerator) wired for Phase-B step 4.
 noise_dim: 32

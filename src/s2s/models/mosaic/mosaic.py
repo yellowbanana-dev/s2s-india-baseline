@@ -2,7 +2,7 @@
 # Original: https://github.com/maxxxzdn/mosaic  License: CC-BY-NC-4.0
 # LOCAL MODIFICATIONS (see ADR-0002):
 #   1. Import paths updated to package-relative (`s2s.models.mosaic.*`).
-#   2. No functional changes to the architecture.
+#   2. ModelConfig/MergedStageConfig: added drop_rate field; passed to MosaicBlock.
 """
 Mosaic: U-Net transformer with block-sparse attention for weather forecasting.
 
@@ -76,6 +76,7 @@ class ModelConfig:
     bottleneck_cfg: BottleneckConfig
     num_history_steps: int = 1
     noise_dim: int = 32
+    drop_rate: float = 0.0
     ortho_init: bool = False
     rmsnorm_elementwise_affine: bool = True
     no_compression: bool = False
@@ -95,6 +96,7 @@ class _MergedStageConfig:
     rope_theta: int
     mlp_ratio: float
     noise_dim: int
+    drop_rate: float
     rmsnorm_elementwise_affine: bool
 
 
@@ -111,6 +113,7 @@ def _merge_configs(config: ModelConfig, stage_cfg) -> _MergedStageConfig:
         rope_theta=config.rope_theta,
         mlp_ratio=stage_cfg.mlp_ratio,
         noise_dim=config.noise_dim,
+        drop_rate=config.drop_rate,
         rmsnorm_elementwise_affine=config.rmsnorm_elementwise_affine,
     )
 

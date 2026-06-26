@@ -5,6 +5,7 @@
 #   2. `from ops import mosaic_sparse_attn` removed; sparse path raises ImportError
 #      (never reached when sparse_every <= 0, which is our permanent config).
 #   3. Import paths updated: `from utils` → `from s2s.models.mosaic.utils`.
+#   4. MosaicBlock: added residual dropout (drop_rate from config, default 0.0).
 """
 Primitive building blocks for the Mosaic transformer.
 
@@ -217,15 +218,17 @@ class MosaicBlock(nn.Module):
         dim = config.dim
         noise_dim = config.noise_dim
         mlp_ratio = config.mlp_ratio
+        drop_rate = getattr(config, 'drop_rate', 0.0)
 
         self.attention = MosaicAttention(config, block_attn_only, no_compression)
         self.norm1 = RMSNorm(dim, elementwise_affine=config.rmsnorm_elementwise_affine)
         self.norm2 = RMSNorm(dim, elementwise_affine=config.rmsnorm_elementwise_affine)
         self.ffn = cSwiGLU(dim, int(dim * mlp_ratio), noise_dim)
+        self.drop = nn.Dropout(drop_rate)
 
     def forward(self, x: torch.Tensor, z: torch.Tensor = None):
-        x = x + self.attention(self.norm1(x))
-        x = x + self.ffn(self.norm2(x), z)
+        x = x + self.drop(self.attention(self.norm1(x)))
+        x = x + self.drop(self.ffn(self.norm2(x), z))
         return x
 
 

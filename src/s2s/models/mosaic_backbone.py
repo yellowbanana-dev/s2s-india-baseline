@@ -111,6 +111,7 @@ class MosaicBackbone(nn.Module):
             bottleneck_cfg=bn_cfg,
             num_history_steps=1,
             noise_dim=int(mc.noise_dim),
+            drop_rate=float(getattr(mc, "drop_rate", 0.0)),
             ortho_init=bool(getattr(mc, "ortho_init", False)),
             rmsnorm_elementwise_affine=True,
             no_compression=bool(getattr(mc, "no_compression", False)),
