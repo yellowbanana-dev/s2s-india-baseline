@@ -139,20 +139,25 @@ def main(cfg: DictConfig) -> None:
         latitude=dm.latitude,
         cfg=cfg,
     )
-    checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    device = torch.device(
+        cfg.get("device", "cuda") if torch.cuda.is_available() else "cpu"
+    )
+    checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
     lit.load_state_dict(checkpoint["state_dict"])
     lit.eval()
+    lit.to(device)
 
     ensemble = P2Ensemble([lit], cfg)
     n_members = len(ensemble.seeds)
 
     test_ds = dm.test_dataset
-    x = test_ds.inputs
+    x = test_ds.inputs.to(device)
     y_true = test_ds.targets.numpy()           # (N, lead, C, lat, lon) standardized
     n_samples = x.shape[0]
-    print(f"Evaluating ensemble: n test samples={n_samples}  members={n_members}")
+    print(f"Evaluating ensemble: n test samples={n_samples}  members={n_members}  device={device}")
 
-    preds = ensemble.forecast(x).numpy()       # (M, N, lead, C, lat, lon) standardized
+    with torch.no_grad():
+        preds = ensemble.forecast(x).detach().cpu().numpy()  # (M, N, lead, C, lat, lon) standardized
 
     lats, lons = dm.latitude, dm.lon
     lead_weeks = list(cfg.data.lead_weeks)
