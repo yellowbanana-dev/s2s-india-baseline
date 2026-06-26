@@ -6,8 +6,11 @@ name: mosaic
 nside: 16
 
 # CG stage (encoder/decoder) — operates at the input nside.
-dim: 256
-num_heads: 8
+# Slim config: dim halved (256→128) to match patch-ViT param budget (~4-5M).
+# Phase-B ablation showed 14.5M Mosaic overfit severely vs 4.9M patch-ViT;
+# this reduces to ~3.5M for a fair architecture comparison. (See ablation note.)
+dim: 128
+num_heads: 8                # head_dim = 128/8 = 16
 encoder_depth: 2
 decoder_depth: 2
 block_attn_size: 512        # 3072/512=6 blocks; local block attention per ADR-0002
@@ -18,7 +21,7 @@ gqa_ratio: 1                # 1 = standard MHA (no GQA)
 
 # Bottleneck — runs at coarser nside=8 (768 tokens); full attention.
 bottleneck_nside: 8
-bottleneck_dim: 512
+bottleneck_dim: 256         # halved from 512; head_dim = 256/8 = 32
 bottleneck_num_heads: 8
 bottleneck_depth: 2
 bottleneck_block_attn_size: 768  # 768/768=1 block = global attention at bottleneck
