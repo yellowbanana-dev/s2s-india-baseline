@@ -41,6 +41,7 @@ def main(cfg: DictConfig) -> None:
         out_channels=dm.out_channels,
         lead=len(cfg.data.lead_weeks),
         latitude=dm.latitude,
+        longitude=dm.lon,
         cfg=cfg,
     )
 

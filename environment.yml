@@ -27,5 +27,7 @@ dependencies:
   - pip:
       - weatherbench2   # data, baselines, metrics
       - dvc             # data versioning
-      - einops          # tensor reshaping for the ViT
+      - einops          # tensor reshaping for ViT and Mosaic
       - pytest          # data-integrity tests
+      - healpy          # HEALPix grids for Mosaic backbone (vendored CC-BY-NC-4.0)
+      - scikit-learn    # BallTree neighbor lookup for cross-attention interpolation

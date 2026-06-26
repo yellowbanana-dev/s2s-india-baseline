@@ -1,0 +1,38 @@
+# Mosaic backbone (vendored CC-BY-NC-4.0) -- see docs/adr/0002-mosaic-backbone-vendoring.md
+name: mosaic
+
+# HEALPix resolution.  nside=16 → npix=3072 ≈ 1.5× our 32×64=2048 grid.
+# Justified in ADR-0002: coarsest nside that preserves spatial density.
+nside: 16
+
+# CG stage (encoder/decoder) — operates at the input nside.
+dim: 256
+num_heads: 8
+encoder_depth: 2
+decoder_depth: 2
+block_attn_size: 512        # 3072/512=6 blocks; local block attention per ADR-0002
+sparse_block_size: 64
+sparse_block_count: 0
+mlp_ratio: 4.0
+gqa_ratio: 1                # 1 = standard MHA (no GQA)
+
+# Bottleneck — runs at coarser nside=8 (768 tokens); full attention.
+bottleneck_nside: 8
+bottleneck_dim: 512
+bottleneck_num_heads: 8
+bottleneck_depth: 2
+bottleneck_block_attn_size: 768  # 768/768=1 block = global attention at bottleneck
+
+# Cross-attention interpolation (lon-lat ↔ HEALPix).
+k_neighbors: 8
+
+# Attention options.
+qk_norm: false
+rope: false                 # RoPE disabled; XYZ static coords provide position
+rope_theta: 10000
+sparse_every: 0             # ≤0 → all blocks run block_attn_only=True (no ops.py)
+qkv_compress_ratio: 1       # no QKV compression
+no_compression: false
+
+# Noise-injection FFN (cSwiGLU + NoiseGenerator) wired for Phase-B step 4.
+noise_dim: 32

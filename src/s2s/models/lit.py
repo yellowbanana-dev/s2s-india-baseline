@@ -22,11 +22,24 @@ def _lat_weights(latitude: np.ndarray) -> torch.Tensor:
     return torch.tensor(w, dtype=torch.float32)
 
 
+def _build_backbone(in_channels, out_channels, lead, cfg, latitude, longitude):
+    name = str(getattr(cfg.model, "name", "patch_vit"))
+    if name == "mosaic":
+        from s2s.models.mosaic_backbone import MosaicBackbone
+        return MosaicBackbone(in_channels, out_channels, lead, cfg.model, latitude, longitude)
+    return PatchViT(in_channels, out_channels, lead, cfg.model)
+
+
 class S2SLitModule(L.LightningModule):
-    def __init__(self, in_channels: int, out_channels: int, lead: int, latitude, cfg):
+    def __init__(self, in_channels: int, out_channels: int, lead: int, latitude, cfg,
+                 longitude=None):
         super().__init__()
         self.cfg = cfg
-        self.model = PatchViT(in_channels, out_channels, lead, cfg.model)
+        self.model = _build_backbone(
+            in_channels, out_channels, lead, cfg,
+            np.asarray(latitude),
+            np.asarray(longitude) if longitude is not None else np.linspace(0.0, 358.125, 64),
+        )
         self.register_buffer("lat_weight", _lat_weights(np.asarray(latitude)).view(1, 1, 1, -1, 1))
 
     def forward(self, x):
