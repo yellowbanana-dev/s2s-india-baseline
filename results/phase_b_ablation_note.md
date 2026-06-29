@@ -98,6 +98,52 @@ Recorded in commit 6dd9c6c. Key differences from the Phase-B patch-ViT run above
 - Phase A used W-MON weekly sampling (~1 764 train samples vs 12 330 here)
 - Phase B patch-ViT shows better acc_mean at all leads, confirming the denser sampling helps
 
+## Stage-A eval results (global attn + RoPE + season emb, epoch 0 best, val=0.4278)
+
+### 2m_temperature
+
+| lead_week | crps_model | crpss_vs_det | crpss_vs_prob | acc_mean | rmse_mean | spread_error_ratio |
+|-----------|-----------|--------------|---------------|----------|-----------|-------------------|
+| 1 | 0.819 | +0.160 | −0.045 | 0.496 | 1.165 | 0.005 |
+| 2 | 0.862 | +0.114 | −0.102 | 0.403 | 1.225 | 0.003 |
+| 3 | 0.865 | +0.112 | −0.106 | 0.389 | 1.235 | 0.003 |
+| 4 | 0.868 | +0.108 | −0.111 | 0.387 | 1.237 | 0.003 |
+| 5 | 0.870 | +0.106 | −0.114 | 0.381 | 1.237 | 0.003 |
+| 6 | 0.869 | +0.109 | −0.109 | 0.379 | 1.241 | 0.003 |
+
+### total_precipitation_24hr
+
+| lead_week | crps_model | crpss_vs_det | crpss_vs_prob | acc_mean | rmse_mean | spread_error_ratio |
+|-----------|-----------|--------------|---------------|----------|-----------|-------------------|
+| 1 | 0.00187 | −0.010 | −0.132 | 0.198 | 0.00302 | 0.004 |
+| 2 | 0.00188 | −0.012 | −0.133 | 0.149 | 0.00305 | 0.004 |
+| 3 | 0.00188 | −0.009 | −0.130 | 0.138 | 0.00306 | 0.003 |
+| 4 | 0.00188 | −0.008 | −0.128 | 0.113 | 0.00308 | 0.003 |
+| 5 | 0.00187 | −0.006 | −0.126 | 0.110 | 0.00308 | 0.002 |
+| 6 | 0.00190 | −0.020 | −0.142 | 0.097 | 0.00308 | 0.003 |
+
+**Gate: FAIL** (CRPSS vs prob < 0 at all weeks — underdispersed, SER ≈ 0.003)
+
+### Stage-A vs prior Mosaic configs and patch-ViT (wks 3–4 t2m)
+
+| Config | Best ep | val_loss | wk3 ACC | wk4 ACC | wk3 CRPSS_prob | wk4 CRPSS_prob |
+|--------|---------|---------|---------|---------|----------------|----------------|
+| Mosaic 14.5M Phase-B | 0 | 0.4295 | 0.369 | 0.326 | −0.111 | −0.127 |
+| Mosaic slim+drop lr=1e-4 | 0 | 0.4306 | 0.408 | 0.399 | — | — |
+| **Mosaic Stage-A** (global+RoPE+doy) | **0** | **0.4278** | **0.389** | **0.387** | **−0.106** | **−0.111** |
+| **patch-ViT Phase-B** | **3** | **0.4254** | **0.437** | **0.413** | **−0.073** | **−0.085** |
+
+Stage-A improvements vs Phase-B Mosaic 14.5M: wk4 ACC +0.061, wk3 ACC +0.020.
+patch-ViT still leads: wk3 ACC +0.048, wk4 ACC +0.026.
+Best val epoch remains 0 — overfitting pattern unchanged by receptive-field / RoPE / season fixes.
+
+**Stage-A conclusion:** Global attention, RoPE, and native season embedding together improve
+epoch-0 quality but do not fix the overfitting trajectory. The root cause is NOT purely the
+receptive field. Leading hypothesis: the cSwiGLU noise FFN (num_noise_samples=1 → deterministic
+noise per sample) acts as a training fingerprint the encoder can memorise. Stage-B options:
+a) Set num_noise_samples=0 (disable noise entirely) to isolate this, or
+b) Proceed with patch-ViT for Phase-B step 4 (learned perturbations / MC dropout ensemble).
+
 ## Follow-up experiments (slim Mosaic)
 
 Three additional runs to isolate root cause of Mosaic overfitting:
