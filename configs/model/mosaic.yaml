@@ -13,7 +13,7 @@ dim: 128
 num_heads: 8                # head_dim = 128/8 = 16
 encoder_depth: 2
 decoder_depth: 2
-block_attn_size: 512        # 3072/512=6 blocks; local block attention per ADR-0002
+block_attn_size: 3072       # 3072/3072=1 block → global attention at every encoder/decoder layer (Stage-A fix)
 sparse_block_size: 64
 sparse_block_count: 0
 mlp_ratio: 4.0
@@ -31,7 +31,7 @@ k_neighbors: 8
 
 # Attention options.
 qk_norm: false
-rope: false                 # RoPE disabled; XYZ static coords provide position
+rope: true                  # RoPE on HEALPix (lon,lat) grid (Stage-A fix; see ADR-0003)
 rope_theta: 10000
 sparse_every: 0             # ≤0 → all blocks run block_attn_only=True (no ops.py)
 qkv_compress_ratio: 1       # no QKV compression

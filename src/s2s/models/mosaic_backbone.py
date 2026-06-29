@@ -25,7 +25,8 @@ The `postprocess[-1]` linear in Transformer is replaced at construction time so
 that output channels = n_lead * C_out (=12) instead of len(variables) (=13).
 
 `num_noise_samples=1` — deterministic backbone, ensemble later (Phase B step 4).
-`day_year_time=zeros` — seasonal signal already in doy_cos channel (C_in[-1]).
+`day_year_time` — day_normalized derived from doy_cos input channel (C_in[-1]) via arccos;
+                  year left at 0 (not in batch). See forward() for the mapping.
 `static_variables=[]` — no static fields yet; space_dim=3 XYZ coords are always
                         appended by initialize_static_vars.
 """
@@ -144,13 +145,22 @@ class MosaicBackbone(nn.Module):
         if (lat, lon) != _GRID:
             raise ValueError(f"expected grid {_GRID}, got {(lat, lon)}")
 
+        # Extract day_normalized BEFORE permuting x.
+        # doy_cos = cos(2π·doy/365.25) is broadcast uniformly in the last input channel (C_in[-1]).
+        # arccos maps to [0,π]; /2π → day_normalized ∈ [0, 0.5].
+        # time_embedding then computes cos(2π·d)=doy_cos and sin(2π·d)=|doy_sin|.
+        # Year stays 0 (sin=0, cos=1) — year is not in the batch.
+        doy_cos_vals = x[:, -1, 0, 0].clamp(-1.0, 1.0)  # (B,), spatial broadcast → [0,0] is representative
+        day_normalized = torch.arccos(doy_cos_vals) / (2.0 * math.pi)  # (B,) in [0, 0.5]
+        day_year_time = torch.zeros(b, 1, 2, device=x.device, dtype=x.dtype)
+        day_year_time[:, 0, 0] = day_normalized
+
         # Step 1-2: (B, C_in, lat, lon) → (B, 1, 1, lon, lat, C_in)
         x = x.permute(0, 2, 3, 1)          # (B, lat, lon, C_in)
         x = x.permute(0, 2, 1, 3)          # (B, lon, lat, C_in)
         x = x.unsqueeze(1).unsqueeze(2)    # (B, 1, 1, lon, lat, C_in)
 
         # Step 3: Mosaic forward  (n=1, t=1, num_noise_samples=1 → deterministic)
-        day_year_time = torch.zeros(b, 1, 2, device=x.device, dtype=x.dtype)
         out = self.transformer(x, day_year_time, num_noise_samples=1)
         # out: (B, 1, lon=64, lat=32, lead*C_out=12)
 
