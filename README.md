@@ -1,7 +1,7 @@
 # S2S India Baseline (G1 × P2)
 
 A subseasonal-to-seasonal (S2S) weather forecasting **baseline** for the Indian
-region. This is Phase A of a larger thesis: its job is **infrastructure + a number
+region. This is Phase A: its job is **infrastructure + a number
 to beat**, not a good model. If it works, every later phase has a foundation and a
 yardstick.
 
