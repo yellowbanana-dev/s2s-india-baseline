@@ -40,5 +40,7 @@ no_compression: false
 # Regularisation — matches patch-ViT drop_rate=0.1.
 drop_rate: 0.1
 
-# Noise-injection FFN (cSwiGLU + NoiseGenerator) wired for Phase-B step 4.
-noise_dim: 32
+# Noise-injection FFN: noise_dim=0 disables cSwiGLU stochastic injection,
+# making the FFN a plain SwiGLU (diagnostic — tests hypothesis that unrewarded
+# noise on deterministic MSE loss is the cause of epoch-0 overfitting).
+noise_dim: 0
