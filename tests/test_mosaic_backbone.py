@@ -324,6 +324,68 @@ def test_time_embedding_nonzero():
 import numpy as _np
 
 
+# ---------------------------------------------------------------------------
+# 8. Per-model LR override: mosaic.yaml lr wins over train default
+# ---------------------------------------------------------------------------
+
+def test_mosaic_uses_model_lr_not_train_default():
+    """cfg.model.lr=3e-5 must override cfg.train.lr=3e-4 for Mosaic.
+
+    Guards against the lr mismatch regression: at lr=3e-4 Mosaic's zero-init
+    residuals are destroyed in one step (epoch-0 curse). The override in
+    configs/model/mosaic.yaml sets lr=3e-5; this test ensures lit.py respects it.
+    """
+    from omegaconf import OmegaConf
+    from s2s.models.lit import S2SLitModule
+
+    train_cfg = OmegaConf.create({
+        "lr": 3.0e-4,        # default (patch_vit value)
+        "weight_decay": 0.1,
+        "warmup_epochs": 2,
+        "max_epochs": 50,
+        "min_lr": 1.0e-6,
+    })
+    model_cfg = _make_mosaic_cfg(lr=3.0e-5)  # mosaic.yaml per-model override
+
+    cfg = OmegaConf.create({"train": train_cfg, "model": model_cfg})
+    lit = S2SLitModule(
+        in_channels=13, out_channels=2, lead=6,
+        latitude=_LAT, longitude=_LON, cfg=cfg,
+    )
+    effective = lit._effective_lr()
+    assert abs(effective - 3.0e-5) < 1e-9, (
+        f"Expected effective lr=3e-5 (from cfg.model.lr), got {effective}. "
+        "cfg.train.lr=3e-4 must NOT silently override cfg.model.lr for Mosaic."
+    )
+
+
+def test_patch_vit_falls_back_to_train_lr():
+    """When cfg.model has no lr key, lit.py must fall back to cfg.train.lr."""
+    from omegaconf import OmegaConf
+    from s2s.models.lit import S2SLitModule
+
+    train_cfg = OmegaConf.create({
+        "lr": 3.0e-4,
+        "weight_decay": 0.1,
+        "warmup_epochs": 2,
+        "max_epochs": 50,
+        "min_lr": 1.0e-6,
+    })
+    model_cfg = OmegaConf.create({   # patch_vit-style: no lr key
+        "patch_size": 2, "embed_dim": 32, "depth": 2,
+        "num_heads": 4, "mlp_ratio": 4.0, "drop_rate": 0.1,
+    })
+    cfg = OmegaConf.create({"train": train_cfg, "model": model_cfg})
+    lit = S2SLitModule(
+        in_channels=6, out_channels=2, lead=6,
+        latitude=_LAT, cfg=cfg,
+    )
+    effective = lit._effective_lr()
+    assert abs(effective - 3.0e-4) < 1e-9, (
+        f"Expected effective lr=3e-4 (from cfg.train.lr), got {effective}."
+    )
+
+
 def test_lit_longitude_fallback_is_true_wb2_grid():
     """If longitude isn't passed, lit.py must fall back to the real 5.625deg grid,
     NOT linspace(0, 358.125, 64) which has 5.684deg spacing."""

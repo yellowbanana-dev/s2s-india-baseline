@@ -60,17 +60,23 @@ class S2SLitModule(L.LightningModule):
         self.log("val_loss", loss, prog_bar=True, on_epoch=True, batch_size=x.shape[0])
         return loss
 
+    def _effective_lr(self) -> float:
+        # cfg.model.lr overrides cfg.train.lr so per-model defaults (e.g. Mosaic
+        # at 3e-5) don't silently revert when the global train default changes.
+        model_lr = getattr(self.cfg.model, "lr", None)
+        return float(model_lr if model_lr is not None else self.cfg.train.lr)
+
     def configure_optimizers(self):
+        base_lr = self._effective_lr()
         opt = torch.optim.AdamW(
             self.parameters(),
-            lr=float(self.cfg.train.lr),
+            lr=base_lr,
             weight_decay=float(self.cfg.train.weight_decay),
         )
 
         warmup = int(self.cfg.train.warmup_epochs)
         max_ep = int(self.cfg.train.max_epochs)
         min_lr = float(self.cfg.train.min_lr)
-        base_lr = float(self.cfg.train.lr)
 
         def _lr_lambda(epoch: int) -> float:
             # Linear warmup: ramp from 1/warmup to 1.0 over `warmup` epochs.

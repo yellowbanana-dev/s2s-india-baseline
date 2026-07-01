@@ -102,3 +102,32 @@ the previous all-zeros baseline.
 - If Stage-A best val epoch > 0 (indicating the fix resolved the epoch-0 overfitting), proceed
   to probabilistic training (CRPS loss, `num_noise_samples > 1`, multi-seed ensemble).
 - Add year normalization by threading timestamps from the datamodule.
+
+---
+
+## Addendum (2026-07-01): Stage-A epoch-0 collapse was NOT caused by these fixes — it was an LR mismatch
+
+**Status: Correction to prior context section**
+
+After Stage-A training completed (best epoch=0, val=0.4278), a further diagnostic sweep
+(branch `mosaic-optim-sweep`, SHA ff5573c) established that the epoch-0 collapse was caused by
+an **LR/zero-init-residual mismatch**, not by the architectural deficits listed above.
+
+**Root cause:** Mosaic zero-inits residual projections (`to_o` and `ffn.w2`, std=0.01). This
+makes the model a near-identity at initialization (val~0.428 at epoch 0). lr=3e-4 overshoots
+this in a single update, permanently destroying the good initial state. lr≤3e-5 lets the model
+learn past the init floor.
+
+**Evidence:**
+- Noise-FFN diagnostic (`noise_dim=0`, plain SwiGLU): same epoch-0 collapse → noise not the cause
+- Optimizer sweep R3 (lr=3e-5, warmup=2, wd=0.1): best ep=3, val=0.4252 — epoch-0 curse broken
+- Full 50-epoch run at lr=3e-5: best ep=3, val=0.4253 — model trains normally
+
+**Implication for this ADR:** The three Stage-A fixes (global attention, RoPE, season embedding)
+are still valid improvements. They were correctly applied. However, their true effect was masked
+by the LR mismatch — Stage-A's "epoch-0 best" was entirely due to lr=3e-4, not the architecture.
+
+With corrected lr=3e-5, added to `configs/model/mosaic.yaml` as a per-model override, Mosaic
+trains to ep3 best val=0.4253, matching patch-ViT (0.4254). Downstream t2m ACC at wk3/4 is
+0.394/0.391 vs patch-ViT 0.437/0.413 — Mosaic improves over the lr=3e-4 baseline but still
+trails patch-ViT. See `results/phase_b_ablation_note.md` for full eval tables.

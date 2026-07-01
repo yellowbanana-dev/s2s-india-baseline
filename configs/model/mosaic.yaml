@@ -42,3 +42,9 @@ drop_rate: 0.1
 
 # Noise-injection FFN (cSwiGLU + NoiseGenerator) wired for Phase-B step 4.
 noise_dim: 32
+
+# Per-model LR override: Mosaic's zero-init residuals (to_o, ffn.w2) are
+# destroyed in one step at the default lr=3e-4 (confirmed by optim sweep on
+# 2026-06-30). lr=3e-5 lets the model train past the init floor. patch_vit
+# keeps the default lr=3e-4 in configs/train/default.yaml.
+lr: 3.0e-5
