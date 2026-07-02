@@ -90,7 +90,11 @@ class PatchViT(nn.Module):
         self.norm = nn.LayerNorm(embed_dim)
         self.head = nn.Linear(embed_dim, lead * out_channels * patch_size * patch_size)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, num_noise_samples: int = 1) -> torch.Tensor:
+        """Deterministic backbone. Accepts num_noise_samples for a uniform interface
+        with MosaicBackbone; PatchViT has no stochastic mechanism, so M>1 tiles the
+        single deterministic prediction into M identical members (zero spread, which
+        the calibration metrics will correctly report as under-dispersed)."""
         b, c, h, w = x.shape
         if c != self.in_channels:
             raise ValueError(f"expected {self.in_channels} input channels, got {c}")
@@ -113,4 +117,7 @@ class PatchViT(nn.Module):
             nh=n_h, nw=n_w, lead=self.lead, c=self.out_channels,
             ph=self.patch_size, pw=self.patch_size,
         )
+        if int(num_noise_samples) > 1:
+            # (B, lead, C, lat, lon) -> (B, M, lead, C, lat, lon), identical members.
+            out = out.unsqueeze(1).expand(-1, int(num_noise_samples), -1, -1, -1, -1).contiguous()
         return out

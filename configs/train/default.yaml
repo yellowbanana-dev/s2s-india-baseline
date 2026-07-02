@@ -19,5 +19,11 @@ ensemble:
   seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
   ic_perturbation_std: 0.05    # std of noise added to input anomalies per member
 
-# Loss: latitude-weighted; precip and temp weighted/handled separately.
+# Loss: "latitude_weighted_mse" (deterministic, default; used by patch_vit and the
+# deterministic Mosaic path) or "fair_crps" (Phase-B Stage B probabilistic training,
+# set on the CLI for the Mosaic ensemble run). precip and temp weighted equally.
 loss: latitude_weighted_mse
+
+# Ensemble sizes for probabilistic (fair_crps) training and internal-noise eval.
+train_members: 8     # members drawn per step for the fair-CRPS estimator (Stage B)
+eval_members: 16     # members drawn at eval time from the model's internal noise

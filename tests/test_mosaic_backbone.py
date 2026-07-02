@@ -398,3 +398,49 @@ def test_lit_longitude_fallback_is_true_wb2_grid():
     true_grid = _np.arange(64) * 5.625
     assert abs(true_grid[-1] - 354.375) < 1e-6
     assert abs(true_grid[1] - true_grid[0] - 5.625) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Phase-B Stage B: member-producing forward (internal noise ensemble)
+# ---------------------------------------------------------------------------
+
+
+def test_forward_single_member_backcompat():
+    """num_noise_samples=1 (default) keeps the deterministic 5-D shape."""
+    model = _build_backbone().eval()
+    x = torch.randn(2, 13, 32, 64)
+    out = model(x)                       # default M=1
+    assert out.shape == (2, 6, 2, 32, 64)
+    out1 = model(x, num_noise_samples=1)
+    assert out1.shape == (2, 6, 2, 32, 64)
+
+
+def test_forward_multi_member_shape_and_spread():
+    """num_noise_samples=M>1 returns (B, M, lead, C, lat, lon); with noise_dim>0 the
+    members are genuinely different (non-zero ensemble spread)."""
+    model = _build_backbone(_make_mosaic_cfg(noise_dim=8)).eval()
+    x = torch.randn(2, 13, 32, 64)
+    M = 5
+    out = model(x, num_noise_samples=M)
+    assert out.shape == (2, M, 6, 2, 32, 64), f"bad member shape {out.shape}"
+    # Members must not be identical when a noise mechanism is active.
+    spread = out.std(dim=1).mean().item()
+    assert spread > 0.0, "ensemble has zero spread despite noise_dim>0"
+
+
+def test_patchvit_uniform_member_interface():
+    """PatchViT accepts num_noise_samples for a uniform interface; M>1 tiles the
+    single deterministic prediction into M identical (zero-spread) members."""
+    from s2s.models.patch_vit import PatchViT
+
+    cfg = OmegaConf.create(dict(
+        name="patch_vit", patch_size=2, embed_dim=32, depth=1,
+        num_heads=4, mlp_ratio=2.0, drop_rate=0.0,
+    ))
+    model = PatchViT(13, 2, 6, cfg).eval()
+    x = torch.randn(2, 13, 32, 64)
+    assert model(x).shape == (2, 6, 2, 32, 64)
+    out = model(x, num_noise_samples=4)
+    assert out.shape == (2, 4, 6, 2, 32, 64)
+    # tiled members are identical -> zero spread (correctly under-dispersed)
+    assert float(out.std(dim=1).mean()) == 0.0

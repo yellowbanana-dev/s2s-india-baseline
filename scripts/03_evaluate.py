@@ -154,17 +154,38 @@ def main(cfg: DictConfig) -> None:
     lit.eval()
     lit.to(device)
 
-    ensemble = P2Ensemble([lit], cfg)
-    n_members = len(ensemble.seeds)
-
     test_ds = dm.test_dataset
     x = test_ds.inputs.to(device)
     y_true = test_ds.targets.numpy()           # (N, lead, C, lat, lon) standardized
     n_samples = x.shape[0]
-    print(f"Evaluating ensemble: n test samples={n_samples}  members={n_members}  device={device}")
 
-    with torch.no_grad():
-        preds = ensemble.forecast(x).detach().cpu().numpy()  # (M, N, lead, C, lat, lon) standardized
+    # Member source. "internal": draw members from the model's own noise mechanism
+    # (Mosaic NoiseGenerator / cSwiGLU -- the Phase-B Stage-B calibrated ensemble).
+    # "p2": external IC-perturbation wrapper (deterministic backbones, e.g. patch_vit).
+    # "auto" picks internal for Mosaic, p2 otherwise.
+    member_source = str(cfg.eval.get("member_source", "auto"))
+    if member_source == "auto":
+        member_source = "internal" if str(getattr(cfg.model, "name", "")) == "mosaic" else "p2"
+
+    if member_source == "internal":
+        n_members = int(cfg.eval.get("members", getattr(cfg.train, "eval_members", 16)))
+        chunk = int(cfg.eval.get("batch", 16))
+        print(f"Evaluating INTERNAL-noise ensemble: n={n_samples}  members={n_members}  "
+              f"chunk={chunk}  device={device}")
+        parts = []
+        with torch.no_grad():
+            for i in range(0, n_samples, chunk):
+                xb = x[i:i + chunk]
+                # adapter returns (b, M, lead, C, lat, lon) for M>1
+                ob = lit.model(xb, num_noise_samples=n_members)
+                parts.append(ob.permute(1, 0, 2, 3, 4, 5).detach().cpu())  # (M, b, ...)
+        preds = torch.cat(parts, dim=1).numpy()   # (M, N, lead, C, lat, lon) standardized
+    else:
+        ensemble = P2Ensemble([lit], cfg)
+        n_members = len(ensemble.seeds)
+        print(f"Evaluating P2 (IC-perturbation) ensemble: n={n_samples}  members={n_members}  device={device}")
+        with torch.no_grad():
+            preds = ensemble.forecast(x).detach().cpu().numpy()  # (M, N, lead, C, lat, lon) standardized
 
     lats, lons = dm.latitude, dm.lon
     lead_weeks = list(cfg.data.lead_weeks)

@@ -24,7 +24,8 @@ Steps in forward():
 The `postprocess[-1]` linear in Transformer is replaced at construction time so
 that output channels = n_lead * C_out (=12) instead of len(variables) (=13).
 
-`num_noise_samples=1` — deterministic backbone, ensemble later (Phase B step 4).
+`num_noise_samples`=1 → deterministic (B,lead,C,lat,lon); >1 → ensemble
+                  (B,M,lead,C,lat,lon) via Mosaic's NoiseGenerator (Phase-B Stage B).
 `day_year_time` — day_normalized derived from doy_cos input channel (C_in[-1]) via arccos;
                   year left at 0 (not in batch). See forward() for the mapping.
 `static_variables=[]` — no static fields yet; space_dim=3 XYZ coords are always
@@ -138,12 +139,23 @@ class MosaicBackbone(nn.Module):
         empty_static = torch.zeros(len(longitude), len(latitude), 0)
         self.transformer.initialize_static_vars(empty_static, lon_t, lat_t)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, num_noise_samples: int = 1) -> torch.Tensor:
+        """Forward pass.
+
+        num_noise_samples == 1 (default): deterministic, returns
+            (B, lead, C_out, lat, lon)  -- back-compatible with the MSE path,
+            PatchViT, and the existing eval/tests.
+        num_noise_samples == M > 1: probabilistic ensemble (Phase-B Stage B).
+            Mosaic's NoiseGenerator draws a fresh functional-perturbation vector
+            per (sample, member) and injects it in every cSwiGLU FFN, yielding M
+            distinct members. Returns (B, M, lead, C_out, lat, lon).
+        """
         b, c, lat, lon = x.shape
         if c != self.in_channels:
             raise ValueError(f"expected {self.in_channels} input channels, got {c}")
         if (lat, lon) != _GRID:
             raise ValueError(f"expected grid {_GRID}, got {(lat, lon)}")
+        M = int(num_noise_samples)
 
         # Extract day_normalized BEFORE permuting x.
         # doy_cos = cos(2π·doy/365.25) is broadcast uniformly in the last input channel (C_in[-1]).
@@ -160,13 +172,13 @@ class MosaicBackbone(nn.Module):
         x = x.permute(0, 2, 1, 3)          # (B, lon, lat, C_in)
         x = x.unsqueeze(1).unsqueeze(2)    # (B, 1, 1, lon, lat, C_in)
 
-        # Step 3: Mosaic forward  (n=1, t=1, num_noise_samples=1 → deterministic)
-        out = self.transformer(x, day_year_time, num_noise_samples=1)
-        # out: (B, 1, lon=64, lat=32, lead*C_out=12)
+        # Step 3: Mosaic forward (n=1, t=1). Output: (B, M, lon=64, lat=32, lead*C_out).
+        out = self.transformer(x, day_year_time, num_noise_samples=M)
 
-        # Steps 4-8: reshape to (B, lead, C_out, lat, lon)
-        out = out[:, 0]                                         # (B, lon, lat, lead*C_out)
-        out = out.permute(0, 2, 1, 3)                          # (B, lat, lon, lead*C_out)
-        out = out.reshape(b, self._lat, self._lon, self.lead, self.out_channels)
-        out = out.permute(0, 3, 4, 1, 2).contiguous()         # (B, lead, C_out, lat, lon)
+        # Steps 4-8: reshape to (B, M, lead, C_out, lat, lon).
+        out = out.permute(0, 1, 3, 2, 4)                       # (B, M, lat, lon, lead*C_out)
+        out = out.reshape(b, M, self._lat, self._lon, self.lead, self.out_channels)
+        out = out.permute(0, 1, 4, 5, 2, 3).contiguous()       # (B, M, lead, C_out, lat, lon)
+        if M == 1:
+            return out[:, 0]                                   # (B, lead, C_out, lat, lon)
         return out
