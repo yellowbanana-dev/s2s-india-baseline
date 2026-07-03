@@ -191,6 +191,7 @@ def main(cfg: DictConfig) -> None:
     lead_weeks = list(cfg.data.lead_weeks)
     out_vars = dm.target_vars
     woy_window = int(cfg.eval.clim_woy_window)
+    crps_fair = bool(cfg.eval.get("crps_fair", True))  # unbiased CRPS for equal footing
 
     target_mean = np.array([dm.normalizer[v]["mean"] for v in out_vars], dtype=np.float32)
     target_std = np.array([dm.normalizer[v]["std"] for v in out_vars], dtype=np.float32)
@@ -237,7 +238,7 @@ def main(cfg: DictConfig) -> None:
             )
 
             # ---- CRPS: model + deterministic clim ----
-            crps_model_f = truth_da.copy(data=crps_ensemble(members, truth))
+            crps_model_f = truth_da.copy(data=crps_ensemble(members, truth, fair=crps_fair))
             crps_detclim_f = truth_da.copy(data=crps_ensemble(zero[np.newaxis, ...], truth))
             crps_model = _latweighted_spatial_mean(_india_box(crps_model_f, cfg))
             crps_detclim = _latweighted_spatial_mean(_india_box(crps_detclim_f, cfg))
@@ -250,7 +251,7 @@ def main(cfg: DictConfig) -> None:
             for s in range(n_samples):
                 clim_ens = climatology_woy_ensemble(train_box, int(woy[s]), window=woy_window)
                 t_box = _india_box(truth_da.isel(time=s), cfg)
-                cf = crps_ensemble(clim_ens.values, t_box.values)  # (lat, lon)
+                cf = crps_ensemble(clim_ens.values, t_box.values, fair=crps_fair)  # (lat, lon)
                 w = np.cos(np.deg2rad(t_box["latitude"].values))
                 crps_prob_samples[s] = float(
                     np.average(np.nanmean(cf, axis=1), weights=w)

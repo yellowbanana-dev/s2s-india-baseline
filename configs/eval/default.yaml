@@ -15,6 +15,11 @@ baselines:
 # Probabilistic-climatology reference pooling (phase-b-plan; ADR-0001 refinement).
 clim_woy_window: 3   # +/- weeks of year pooled into the climatological ensemble
 
+# Score multi-member CRPS (model + probabilistic climatology) with the UNBIASED
+# 1/(2 M(M-1)) estimator so a 16-member model and a ~240-member climatology are
+# compared on equal footing (biased 1/(2 M^2) disadvantages the smaller ensemble).
+crps_fair: true
+
 # Reliability-diagram events. Relative events live in anomaly space; absolute
 # events are evaluated on RECONSTRUCTED weekly-mean PHYSICAL fields (train clim
 # added back; precip un-log1p'd). NOTE: these are WEEKLY-MEAN exceedances, not

@@ -11,7 +11,8 @@ from __future__ import annotations
 import numpy as np
 
 
-def crps_ensemble(forecast_members: np.ndarray, truth: np.ndarray) -> np.ndarray:
+def crps_ensemble(forecast_members: np.ndarray, truth: np.ndarray,
+                  fair: bool = False) -> np.ndarray:
     """Continuous Ranked Probability Score from an ensemble. PRIMARY metric.
 
     forecast_members: (M, ...)   truth: (...)
@@ -21,6 +22,12 @@ def crps_ensemble(forecast_members: np.ndarray, truth: np.ndarray) -> np.ndarray
         CRPS = E|X - y| - 0.5 * E|X - X'|
     where X, X' are independent draws from the ensemble. For a single-member
     (deterministic) forecast the second term is 0 and CRPS reduces to |f - y|.
+
+    fair=False (default): biased spread estimator 1/(2 M^2) ΣΣ|x_i-x_j|.
+    fair=True: UNBIASED estimator 1/(2 M(M-1)) ΣΣ (Ferro 2014) — needed when
+    comparing ensembles of DIFFERENT sizes on equal footing (e.g. a 16-member
+    model vs a ~240-member climatology), since the biased form's M-dependence
+    otherwise disadvantages the smaller ensemble.
     """
     forecast_members = np.asarray(forecast_members, dtype=float)
     truth = np.asarray(truth, dtype=float)
@@ -31,8 +38,9 @@ def crps_ensemble(forecast_members: np.ndarray, truth: np.ndarray) -> np.ndarray
         return term1
 
     diff = forecast_members[:, np.newaxis, ...] - forecast_members[np.newaxis, :, ...]
-    term2 = np.mean(np.abs(diff), axis=(0, 1))
-    return term1 - 0.5 * term2
+    spread_sum = np.abs(diff).sum(axis=(0, 1))
+    denom = m * (m - 1) if fair else m * m
+    return term1 - 0.5 * (spread_sum / denom)
 
 
 def acc(forecast: np.ndarray, truth: np.ndarray) -> float:

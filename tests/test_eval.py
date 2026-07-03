@@ -148,3 +148,16 @@ def test_climatology_woy_window_selects_in_season():
     d = np.abs(woy - 26)
     d = np.minimum(d, 52 - d)
     assert (d <= 2).all()                    # every pooled member in-season
+
+
+def test_crps_fair_vs_biased_estimator():
+    # members {1,3}, truth 2. Biased spread = 1/(2*M^2)*ΣΣ = 0.5 -> CRPS 0.5.
+    # Fair   spread = 1/(2*M(M-1))*ΣΣ = 1.0 -> CRPS 0.0. The fair option must
+    # subtract more spread (unbiased), so fair CRPS < biased CRPS here.
+    members = xr.DataArray([1.0, 3.0], dims=["member"]).values
+    truth = np.array(2.0)
+    biased = float(crps_ensemble(members, truth, fair=False))
+    fair = float(crps_ensemble(members, truth, fair=True))
+    assert abs(biased - 0.5) < 1e-9
+    assert abs(fair - 0.0) < 1e-9
+    assert fair < biased
