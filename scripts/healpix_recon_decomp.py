@@ -13,12 +13,13 @@ or a measurement artifact:
                        i.e. the loss the DEPLOYED model actually incurs. Skipped if
                        no checkpoint is given.
 
-Decision rule (Phase-C, ADR-0005):
-  * trained India-box relative RMSE small (< ~0.1)  -> 0.307 is an untrained artifact;
-    lever (a) is a mirage -> pivot (record a no-op ADR).
-  * geometric floor small but trained loss large    -> interpolators fail to learn the
-    mapping; fix = geometric (IDW) init or an IDW skip around the mesh.
-  * geometric floor itself large at nside=16, small at nside=32 -> fix = finer mesh.
+Reading the references (see ADR-0005 for the verdict):
+  * geom_idw small  -> the mesh round-trips near-losslessly; geometry is not the bottleneck.
+  * attn_untrained ~= 0.307 -> the harness reproduces the ADR-0004 check.
+  * CAVEAT: attn_trained composes interp_to_hp -> interp_to_ll back-to-back, which NEVER
+    happens in the real forward pass (the U-Net sits between them and interp_to_ll is trained
+    on decoder features, not on interp_to_hp's raw output). So attn_trained is NOT a clean
+    measure of deployed loss; treat it as diagnostic context, not proof of lost skill.
 
 Run (cluster CLI):
   python scripts/healpix_recon_decomp.py
@@ -195,8 +196,9 @@ def main(cfg: DictConfig) -> None:
     else:
         print("\n[attn_trained skipped: pass +ckpt=/path/to/seed_0/epoch=..ckpt to enable]")
 
-    print("\nDecision: if attn_trained India-box rel RMSE < ~0.1 the 0.307 is an untrained")
-    print("artifact (lever (a) = mirage). If geom floor << attn_trained, fix = IDW init/skip.\n")
+    print("\nNote: geom_idw is the clean geometric floor; attn_untrained validates the harness")
+    print("against the 0.307 check. attn_trained is CONFOUNDED (off-distribution composition,")
+    print("see ADR-0005) -- not a deployed-loss measure. Verdict on lever (a): ADR-0005.\n")
 
 
 if __name__ == "__main__":
