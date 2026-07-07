@@ -65,6 +65,8 @@ from s2s.eval.metrics import (
 )
 from s2s.models.ensemble import P2Ensemble
 from s2s.models.lit import S2SLitModule
+from s2s.eval.provenance import provenance_columns
+from s2s.models.mosaic.primitives import NoiseGenerator
 
 
 def _india_box(da: xr.DataArray, cfg) -> xr.DataArray:
@@ -186,8 +188,18 @@ def main(cfg: DictConfig) -> None:
     member_source = str(cfg.eval.get("member_source", "auto"))
     if member_source == "auto":
         member_source = "internal" if str(getattr(cfg.model, "name", "")) == "mosaic" else "p2"
+    member_seed = None  # set for the internal-noise path below; None for p2
 
     if member_source == "internal":
+        # Eval member draws come solely from the NoiseGenerator seed (eval sets no
+        # global seed). cfg.seed now threads into training (Fix 8), so pin the EVAL
+        # draw seed explicitly here — default 42 reproduces the pre-Fix-8 baseline
+        # bit-for-bit; override eval.member_seed to vary the ensemble draw.
+        member_seed = int(cfg.eval.get("member_seed", 42))
+        for _mod in lit.model.modules():
+            if isinstance(_mod, NoiseGenerator):
+                _mod.seed = member_seed
+                _mod.generator = None
         n_members = int(cfg.eval.get("members", getattr(cfg.train, "eval_members", 16)))
         chunk = int(cfg.eval.get("batch", 16))
         print(f"Evaluating INTERNAL-noise ensemble: n={n_samples}  members={n_members}  "
@@ -212,6 +224,10 @@ def main(cfg: DictConfig) -> None:
     out_vars = dm.target_vars
     woy_window = int(cfg.eval.clim_woy_window)
     crps_fair = bool(cfg.eval.get("crps_fair", True))  # unbiased CRPS for equal footing
+    provenance = provenance_columns(
+        checkpoint_path=ckpt_path, crps_fair=crps_fair,
+        n_members=n_members, member_seed=member_seed,
+    )  # constant per-row stamp for metrics.csv (commit/checkpoint/crps_fair/n_members)
 
     target_mean = np.array([dm.normalizer[v]["mean"] for v in out_vars], dtype=np.float32)
     target_std = np.array([dm.normalizer[v]["std"] for v in out_vars], dtype=np.float32)
@@ -377,6 +393,7 @@ def main(cfg: DictConfig) -> None:
                 reliab[ev["name"]]["y"].append(yt.reshape(-1))
 
             rows.append({
+                **provenance,
                 "variable": var, "lead_week": lead_week,
                 "crps_model": crps_model,
                 "crps_clim_det": crps_detclim,

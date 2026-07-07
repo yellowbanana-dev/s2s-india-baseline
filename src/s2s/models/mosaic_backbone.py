@@ -56,6 +56,7 @@ class MosaicBackbone(nn.Module):
         cfg,
         latitude: np.ndarray,
         longitude: np.ndarray,
+        seed: int = 42,
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -119,7 +120,9 @@ class MosaicBackbone(nn.Module):
             no_compression=bool(getattr(mc, "no_compression", False)),
         )
 
-        self.transformer = Transformer(model_cfg, seed=42)
+        # seed threads cfg.seed (Fix 8/M3): the noise RNG must differ across
+        # 'independent' training seeds, not be hardcoded to 42.
+        self.transformer = Transformer(model_cfg, seed=int(seed))
 
         # Replace postprocess head: Transformer outputs len(variables)=C_in channels,
         # but we need n_lead * C_out channels. Swap the final Linear in-place.

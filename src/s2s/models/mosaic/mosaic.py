@@ -306,6 +306,15 @@ class Transformer(nn.Module):
 
     def forward(self, x: torch.Tensor, day_year_time: torch.Tensor, num_noise_samples: int):
         b, n, _, lon, lat, _ = x.shape
+        # --- local safety guard (Fix 8/M3) ---
+        # Members are packed as (b s n) below but unpacked as (b n s) at the end;
+        # those orderings coincide ONLY when n==1. n>1 would silently scramble
+        # ensemble members across samples. The adapter always feeds n==1.
+        assert n == 1, (
+            f"Mosaic adapter assumes a single history step (n==1), got n={n}: "
+            "noise members are packed (b s n) but unpacked (b n s), which only "
+            "agree when n==1; n>1 would misassign members."
+        )
         batch_size = b * num_noise_samples * n
 
         if self.noise_dim > 0:

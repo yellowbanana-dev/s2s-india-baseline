@@ -20,6 +20,11 @@ clim_woy_window: 3   # +/- weeks of year pooled into the climatological ensemble
 # compared on equal footing (biased 1/(2 M^2) disadvantages the smaller ensemble).
 crps_fair: true
 
+# Eval ensemble draw seed (Fix 8/M3). Member draws come only from the Mosaic
+# NoiseGenerator seed; eval sets no global seed. Default 42 reproduces the
+# pre-Fix-8 baseline bit-for-bit (training seed threading is separate: cfg.seed).
+member_seed: 42
+
 # Paired bootstrap 95% CIs on crpss_vs_prob (Fix 2 / C2). No retraining: resample
 # the per-sample CRPS pairs (model vs prob-clim). Moving-block is primary; the
 # per-calendar-year resample (written as *_yr columns) is an autocorrelation-robust
