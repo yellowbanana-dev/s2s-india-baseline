@@ -43,7 +43,11 @@ from omegaconf import DictConfig
 
 from s2s.data.datamodule import S2SDataModule
 from s2s.data.windows import daily_to_weekly_mean
-from s2s.eval.baselines import climatology_woy_ensemble
+from s2s.eval.baselines import (
+    climatology_woy_ensemble,
+    climatology_woy_trend_ensemble,
+    fit_linear_trend,
+)
 from s2s.eval.bootstrap import (
     block_bootstrap_crpss,
     crpss_by_year,
@@ -266,19 +270,28 @@ def main(cfg: DictConfig) -> None:
             target_times = pd.DatetimeIndex(init_times) + pd.to_timedelta(7 * lead_week, unit="D")
             woy = target_times.isocalendar().week.values.astype(int)
             crps_prob_samples = np.empty(n_samples)
+            crps_trend_samples = np.empty(n_samples)  # trend-aware reference (Fix 3 / C1)
             train_box = _india_box(train_weekly, cfg)
+            trend_box = fit_linear_trend(train_box)   # per-gridpoint TRAIN-only slope
             for s in range(n_samples):
-                clim_ens = climatology_woy_ensemble(train_box, int(woy[s]), window=woy_window)
                 t_box = _india_box(truth_da.isel(time=s), cfg)
-                cf = crps_ensemble(clim_ens.values, t_box.values, fair=crps_fair)  # (lat, lon)
                 w = np.cos(np.deg2rad(t_box["latitude"].values))
-                crps_prob_samples[s] = float(
-                    np.average(np.nanmean(cf, axis=1), weights=w)
+                # (i) plain week-of-year probabilistic climatology
+                clim_ens = climatology_woy_ensemble(train_box, int(woy[s]), window=woy_window)
+                cf = crps_ensemble(clim_ens.values, t_box.values, fair=crps_fair)  # (lat, lon)
+                crps_prob_samples[s] = float(np.average(np.nanmean(cf, axis=1), weights=w))
+                # (ii) SAME pool, detrended onto this target date (trend null)
+                clim_trend = climatology_woy_trend_ensemble(
+                    train_box, int(woy[s]), target_times[s], window=woy_window, trend=trend_box
                 )
+                cft = crps_ensemble(clim_trend.values, t_box.values, fair=crps_fair)
+                crps_trend_samples[s] = float(np.average(np.nanmean(cft, axis=1), weights=w))
             crps_probclim = float(np.mean(crps_prob_samples))
+            crps_climtrend = float(np.mean(crps_trend_samples))
 
             skill_det = crpss(crps_model, crps_detclim)
             skill_prob = crpss(crps_model, crps_probclim)
+            skill_trend = crpss(crps_model, crps_climtrend)
 
             # ---- paired bootstrap 95% CIs on crpss_vs_prob (Fix 2 / C2) ----
             # Resample paired per-sample CRPS (model vs prob-clim reference); no retrain.
@@ -295,8 +308,25 @@ def main(cfg: DictConfig) -> None:
                 crps_model_samples, crps_prob_samples,
                 init_years, n_boot=n_boot, seed=boot_seed,
             )
-            for _r in crpss_by_year(crps_model_samples, crps_prob_samples, init_years):
-                year_rows.append({"variable": var, "lead_week": lead_week, **_r})
+            # same machinery, trend-aware reference (Fix 3 / C1)
+            blk_tr = block_bootstrap_crpss(
+                crps_model_samples, crps_trend_samples,
+                block_len=block_len, n_boot=n_boot, seed=boot_seed,
+            )
+            yr_tr = year_bootstrap_crpss(
+                crps_model_samples, crps_trend_samples,
+                init_years, n_boot=n_boot, seed=boot_seed,
+            )
+            _by_prob = crpss_by_year(crps_model_samples, crps_prob_samples, init_years)
+            _by_trend = crpss_by_year(crps_model_samples, crps_trend_samples, init_years)
+            for _rp, _rt in zip(_by_prob, _by_trend):
+                assert _rp["year"] == _rt["year"]
+                year_rows.append({
+                    "variable": var, "lead_week": lead_week,
+                    "year": _rp["year"], "n_samples": _rp["n_samples"],
+                    "crpss_vs_prob": _rp["crpss_vs_prob"],
+                    "crpss_vs_trend": _rt["crpss_vs_prob"],
+                })
 
             # ---- deterministic ACC / RMSE of the ensemble mean (lat-weighted) ----
             ens_mean = members.mean(axis=0)      # (N, lat, lon)
@@ -351,6 +381,7 @@ def main(cfg: DictConfig) -> None:
                 "crps_model": crps_model,
                 "crps_clim_det": crps_detclim,
                 "crps_clim_prob": crps_probclim,
+                "crps_clim_trend": crps_climtrend,
                 "crpss_vs_det": skill_det,
                 "crpss_vs_prob": skill_prob,
                 "crpss_vs_prob_ci_lo": blk["ci_lo"],
@@ -358,6 +389,12 @@ def main(cfg: DictConfig) -> None:
                 "crpss_vs_prob_boot_se": blk["boot_se"],
                 "crpss_vs_prob_ci_lo_yr": yr["ci_lo"],
                 "crpss_vs_prob_ci_hi_yr": yr["ci_hi"],
+                "crpss_vs_trend": skill_trend,
+                "crpss_vs_trend_ci_lo": blk_tr["ci_lo"],
+                "crpss_vs_trend_ci_hi": blk_tr["ci_hi"],
+                "crpss_vs_trend_boot_se": blk_tr["boot_se"],
+                "crpss_vs_trend_ci_lo_yr": yr_tr["ci_lo"],
+                "crpss_vs_trend_ci_hi_yr": yr_tr["ci_hi"],
                 "boot_block_len": blk["block_len"],
                 "boot_n": blk["n_boot"],
                 "acc_mean": acc_box,
@@ -400,11 +437,11 @@ def main(cfg: DictConfig) -> None:
 
     print("\n=== Honest eval -- India box, test split, PHYSICAL units ===\n")
     _ci_cols = ["crps_model", "crpss_vs_prob", "crpss_vs_prob_ci_lo",
-                "crpss_vs_prob_ci_hi", "crpss_vs_prob_ci_lo_yr",
-                "crpss_vs_prob_ci_hi_yr", "spread_error_ratio"]
+                "crpss_vs_prob_ci_hi", "crpss_vs_trend", "crpss_vs_trend_ci_lo",
+                "crpss_vs_trend_ci_hi", "spread_error_ratio"]
     for var in out_vars:
         sub = table[table["variable"] == var].set_index("lead_week")
-        print(f"--- {var} ---  (crpss_vs_prob with 95% block CI [ci_lo, ci_hi]; *_yr = per-year resample)")
+        print(f"--- {var} ---  (crpss_vs_prob = plain WOY clim; crpss_vs_trend = trend-detrended clim; 95% block CI)")
         print(sub[_ci_cols].to_string(float_format=lambda v: f"{v:.5f}"))
         print()
 
@@ -414,18 +451,38 @@ def main(cfg: DictConfig) -> None:
     gate_pass = bool((g["crpss_vs_prob"] > gate_thr).all()) if len(g) else False
     # CI-aware gate: does the 95% block CI exclude the threshold for EVERY gate cell?
     ci_excludes = bool((g["crpss_vs_prob_ci_lo"] > gate_thr).all()) if len(g) else False
+    # C1 test: does the gate survive the TREND null (detrended reference)?
+    trend_pass = bool((g["crpss_vs_trend"] > gate_thr).all()) if len(g) else False
+    trend_ci_excludes = bool((g["crpss_vs_trend_ci_lo"] > gate_thr).all()) if len(g) else False
     print(
         f"Decision gate (lead weeks {gate_leads}, metric={cfg.eval.gate.metric} "
         f"vs {cfg.eval.gate.reference}, threshold {gate_thr}): "
         f"{'PASS' if gate_pass else 'FAIL'}  "
         f"[95% block CI excludes {gate_thr} at all gate cells: {'YES' if ci_excludes else 'NO'}]"
     )
+    print(
+        f"Trend-null gate (vs DETRENDED clim, crpss_vs_trend > {gate_thr}): "
+        f"{'PASS' if trend_pass else 'FAIL'}  "
+        f"[95% block CI excludes {gate_thr} at all gate cells: {'YES' if trend_ci_excludes else 'NO'}]"
+    )
     for _, r in g.iterrows():
         print(
             f"    {r['variable']:<24} wk{int(r['lead_week'])}: "
-            f"crpss_vs_prob={r['crpss_vs_prob']:.4f} "
-            f"CI[{r['crpss_vs_prob_ci_lo']:.4f}, {r['crpss_vs_prob_ci_hi']:.4f}] "
-            f"yrCI[{r['crpss_vs_prob_ci_lo_yr']:.4f}, {r['crpss_vs_prob_ci_hi_yr']:.4f}]"
+            f"vs_prob={r['crpss_vs_prob']:.4f} CI[{r['crpss_vs_prob_ci_lo']:.4f},{r['crpss_vs_prob_ci_hi']:.4f}]  "
+            f"vs_trend={r['crpss_vs_trend']:.4f} CI[{r['crpss_vs_trend_ci_lo']:.4f},{r['crpss_vs_trend_ci_hi']:.4f}]"
+        )
+
+    # Non-dynamical asymptote: at the longest lead there is little/no dynamical
+    # memory, so CRPSS there is ~ the pure distributional (trend + calibrated
+    # spread) advantage. crpss_vs_trend at wk3-4 collapsing toward this asymptote
+    # would mean the gate is trend, not S2S skill (C1).
+    max_lead = max(lead_weeks)
+    wk6 = table[table["lead_week"] == max_lead]
+    print(f"\nNon-dynamical asymptote (longest lead = wk{max_lead}):")
+    for _, r in wk6.iterrows():
+        print(
+            f"    {r['variable']:<24} crpss_vs_prob={r['crpss_vs_prob']:.4f}  "
+            f"crpss_vs_trend={r['crpss_vs_trend']:.4f}"
         )
     print(f"\nSaved: {csv_path}, {results_dir / 'crpss_by_year.csv'} + PNGs in {results_dir}")
 
