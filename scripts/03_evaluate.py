@@ -44,6 +44,11 @@ from omegaconf import DictConfig
 from s2s.data.datamodule import S2SDataModule
 from s2s.data.windows import daily_to_weekly_mean
 from s2s.eval.baselines import climatology_woy_ensemble
+from s2s.eval.bootstrap import (
+    block_bootstrap_crpss,
+    crpss_by_year,
+    year_bootstrap_crpss,
+)
 from s2s.eval.metrics import (
     acc,
     crps_ensemble,

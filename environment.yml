@@ -29,5 +29,6 @@ dependencies:
       - dvc             # data versioning
       - einops          # tensor reshaping for ViT and Mosaic
       - pytest          # data-integrity tests
+      - pyflakes        # static undefined-name guard for scripts (tests/test_scripts_static.py)
       - healpy          # HEALPix grids for Mosaic backbone (vendored CC-BY-NC-4.0)
       - scikit-learn    # BallTree neighbor lookup for cross-attention interpolation
