@@ -36,6 +36,10 @@ class S2SDataset(Dataset):
     def __init__(self, arrays: dict):
         self.inputs = torch.from_numpy(arrays["inputs"])
         self.targets = torch.from_numpy(arrays["targets"])
+        # Keep the per-sample init-week timestamps (assemble_arrays / window builders
+        # both return "time") so eval can hard-check its own time reconstruction
+        # against the actual assembled axis instead of a re-derivation. None-safe.
+        self.time = arrays.get("time")
 
     def __len__(self) -> int:
         return self.inputs.shape[0]

@@ -44,6 +44,7 @@ from omegaconf import DictConfig
 from s2s.data.datamodule import S2SDataModule
 from s2s.data.windows import daily_to_weekly_mean
 from s2s.eval.baselines import climatology_woy_ensemble
+from s2s.eval.time_align import reconstruct_init_times
 from s2s.eval.metrics import (
     acc,
     crps_ensemble,
@@ -211,13 +212,29 @@ def main(cfg: DictConfig) -> None:
     split = anom_all["split"].astype(str)
     test_daily = anom_all.sel(time=split == "test").drop_vars("split")
     test_weekly_time = daily_to_weekly_mean(test_daily[[out_vars[0]]]).time.values
-    # assemble_arrays drops edge weeks lacking a full lead window; align by trimming
-    # to the last N init weeks that produced samples (max_lead trimmed off the end).
+    # Reconstruct the test init-week axis EXACTLY as assemble_arrays does, via the
+    # shared helper (src/s2s/eval/time_align.py): valid_idx = arange(history_weeks-1,
+    # n_time - max_lead). The previous code trimmed only max_lead off the END and
+    # leaned on an init_times[-n_samples:] fallback to silently repair the missing
+    # (history_weeks - 1) leading drop; that masked any real eval/assemble divergence.
+    # Now we hard-assert length and endpoints so a mismatch fails loudly.
     max_lead = max(lead_weeks)
-    init_times = test_weekly_time[: len(test_weekly_time) - max_lead]
-    if len(init_times) != n_samples:
-        # be robust to any off-by-one in edge handling: take the trailing n_samples.
-        init_times = init_times[-n_samples:]
+    history_weeks = int(cfg.data.history_weeks)
+    init_times = reconstruct_init_times(test_weekly_time, history_weeks, max_lead)
+    assert len(init_times) == n_samples, (
+        f"init-time reconstruction length {len(init_times)} != n_samples {n_samples} "
+        f"(history_weeks={history_weeks}, max_lead={max_lead}, "
+        f"n_weekly={len(test_weekly_time)}); 03_evaluate and assemble_arrays disagree "
+        f"on which test weeks are valid inits."
+    )
+    ds_time = getattr(test_ds, "time", None)
+    if ds_time is not None:
+        ds_time = np.asarray(ds_time)
+        assert np.array_equal(init_times, ds_time), (
+            "reconstructed init_times do not match the assembled test dataset times: "
+            f"got [{init_times[0]} .. {init_times[-1]}], "
+            f"assembled [{ds_time[0]} .. {ds_time[-1]}]."
+        )
 
     rows = []
     rank_store = {}
