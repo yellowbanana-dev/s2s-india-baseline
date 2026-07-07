@@ -150,6 +150,27 @@ def main(cfg: DictConfig) -> None:
         cfg.get("device", "cuda") if torch.cuda.is_available() else "cpu"
     )
     checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
+
+    # Guard: the architecture this config builds must match the checkpoint. A
+    # mismatch is almost always a train/eval code-or-config drift (e.g. differing
+    # data.sst_history_lags_weeks, or eval run from a stale checkout). Turn the
+    # cryptic torch size-mismatch into an actionable message. Mosaic prepends
+    # static XYZ (3) + time embedding (4) to in_channels in its preprocess layer.
+    _pp = checkpoint["state_dict"].get("model.transformer.preprocess.0.weight")
+    if _pp is not None:
+        ckpt_in = int(_pp.shape[1]) - 7
+        if ckpt_in != dm.in_channels:
+            _lags = list(getattr(cfg.data, "sst_history_lags_weeks", []) or [])
+            raise ValueError(
+                f"in_channels mismatch between this eval config and the checkpoint: "
+                f"config builds in_channels={dm.in_channels} (mosaic preprocess width "
+                f"{dm.in_channels + 7}), checkpoint expects in_channels={ckpt_in} "
+                f"(preprocess width {int(_pp.shape[1])}). Train and eval MUST use the same "
+                f"code + data config. Verify the eval repo is on the training commit and that "
+                f"data.sst_history_lags_weeks matches the trained model "
+                f"(this run: {_lags})."
+            )
+
     lit.load_state_dict(checkpoint["state_dict"])
     lit.eval()
     lit.to(device)
