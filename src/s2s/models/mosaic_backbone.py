@@ -26,8 +26,9 @@ that output channels = n_lead * C_out (=12) instead of len(variables) (=13).
 
 `num_noise_samples`=1 → deterministic (B,lead,C,lat,lon); >1 → ensemble
                   (B,M,lead,C,lat,lon) via Mosaic's NoiseGenerator (Phase-B Stage B).
-`day_year_time` — day_normalized derived from doy_cos input channel (C_in[-1]) via arccos;
-                  year left at 0 (not in batch). See forward() for the mapping.
+`day_year_time` — day_normalized recovered from the seasonal pair (doy_cos=C_in[-2],
+                  doy_sin=C_in[-1]) via atan2 (full [0,1) range, no spring/fall ambiguity,
+                  ADR-0006); year left at 0 (deferred). See forward() for the mapping.
 `static_variables=[]` — no static fields yet; space_dim=3 XYZ coords are always
                         appended by initialize_static_vars.
 """
@@ -158,12 +159,16 @@ class MosaicBackbone(nn.Module):
         M = int(num_noise_samples)
 
         # Extract day_normalized BEFORE permuting x.
-        # doy_cos = cos(2π·doy/365.25) is broadcast uniformly in the last input channel (C_in[-1]).
-        # arccos maps to [0,π]; /2π → day_normalized ∈ [0, 0.5].
-        # time_embedding then computes cos(2π·d)=doy_cos and sin(2π·d)=|doy_sin|.
-        # Year stays 0 (sin=0, cos=1) — year is not in the batch.
-        doy_cos_vals = x[:, -1, 0, 0].clamp(-1.0, 1.0)  # (B,), spatial broadcast → [0,0] is representative
-        day_normalized = torch.arccos(doy_cos_vals) / (2.0 * math.pi)  # (B,) in [0, 0.5]
+        # The LAST two input channels are the seasonal pair (ADR-0006):
+        #   x[:, -2] = cos(2π·doy/365.25),  x[:, -1] = sin(2π·doy/365.25),
+        # both broadcast uniformly over lat/lon. atan2(sin, cos)/2π recovers the
+        # TRUE day fraction in [0, 1) with no spring/fall ambiguity (the old
+        # arccos-from-cos path collapsed to [0, 0.5]). Year stays 0 (deferred,
+        # ADR-0006): test years lie outside the train range.
+        doy_cos_vals = x[:, -2, 0, 0].clamp(-1.0, 1.0)  # (B,)
+        doy_sin_vals = x[:, -1, 0, 0].clamp(-1.0, 1.0)  # (B,)
+        angle = torch.atan2(doy_sin_vals, doy_cos_vals)          # (B,) in [-π, π]
+        day_normalized = (angle / (2.0 * math.pi)) % 1.0         # (B,) in [0, 1)
         day_year_time = torch.zeros(b, 1, 2, device=x.device, dtype=x.dtype)
         day_year_time[:, 0, 0] = day_normalized
 

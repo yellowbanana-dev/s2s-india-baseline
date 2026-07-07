@@ -37,6 +37,11 @@ eval_box:                      # lat/lon bounds for scoring only
 lead_weeks: [1, 2, 3, 4, 5, 6]
 history_weeks: 2               # weeks of past state fed as input
 
+# Extra SST-history lags (weeks) beyond the shared history_weeks stack (ADR-0006,
+# lever b). Spaced (not contiguous) to capture SST tendency/evolution while
+# limiting collinearity/overfitting. [] disables it (pipeline unchanged).
+sst_history_lags_weeks: [4, 8, 12]
+
 # Splits by year block. Stats (climatology, norm) come from TRAIN ONLY.
 splits:
   train: [1979, 2012]

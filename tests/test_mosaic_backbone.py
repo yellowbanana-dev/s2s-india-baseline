@@ -268,57 +268,45 @@ def test_rope_enabled_forward():
 # 7. Native time embedding: non-zero doy_cos input → non-zero day_year_time
 # ---------------------------------------------------------------------------
 
-def test_time_embedding_nonzero():
-    """Non-zero doy_cos in x[:, -1] produces a non-zero day_year_time signal.
-
-    Verifies Stage-A fix 3: the adapter derives day_normalized via arccos(doy_cos)
-    and injects it into the Transformer time embedding instead of passing zeros.
-    """
+def test_time_embedding_atan2_recovers_true_day_and_disambiguates():
+    """ADR-0006: the adapter recovers the true day fraction from the seasonal pair
+    (doy_cos=C_in[-2], doy_sin=C_in[-1]) via atan2 -- full [0,1) range, and it
+    distinguishes spring from fall (which the old arccos-from-cos path could not,
+    since those days share the same doy_cos)."""
     from s2s.models.mosaic_backbone import MosaicBackbone
     import math
 
     cfg = _make_mosaic_cfg()
-    model = MosaicBackbone(13, 2, 6, cfg, _LAT, _LON)
-    model.eval()
+    model = MosaicBackbone(13, 2, 6, cfg, _LAT, _LON).eval()
 
-    # Midsummer: doy_cos = cos(2π * 182/365.25) ≈ cos(π) ≈ -1
-    # arccos(-1)/2π = 0.5 → day_year_time[:, 0, 0] = 0.5
-    # Midwinter: doy=0 → doy_cos=1 → day_normalized=0
-    doy_cos_summer = torch.tensor(-0.99, dtype=torch.float32)
-    doy_cos_winter = torch.tensor(1.00, dtype=torch.float32)
-    expected_day_summer = math.acos(-0.99) / (2 * math.pi)
-    expected_day_winter = 0.0
-
-    # Capture day_year_time passed to self.transformer by patching forward
     captured = {}
     _real_fwd = model.transformer.forward
 
     def _patched_fwd(x, day_year_time, **kw):
-        captured["day_year_time"] = day_year_time.detach().clone()
+        captured["d"] = day_year_time.detach().clone()
         return _real_fwd(x, day_year_time, **kw)
 
     model.transformer.forward = _patched_fwd
 
-    x_summer = torch.randn(1, 13, 32, 64)
-    x_summer[:, -1] = doy_cos_summer   # uniform doy_cos channel
+    def _day_norm_for(doy):
+        frac = 2 * math.pi * doy / 365.25
+        x = torch.randn(1, 13, 32, 64)
+        x[:, -2] = math.cos(frac)   # doy_cos
+        x[:, -1] = math.sin(frac)   # doy_sin
+        with torch.no_grad():
+            model(x)
+        return captured["d"][0, 0, 0].item()
 
-    with torch.no_grad():
-        model(x_summer)
+    # Spring (day 91) and fall (day 273) are symmetric about the summer solstice
+    # (~day 182): identical doy_cos, opposite doy_sin. arccos would collapse them.
+    spring = _day_norm_for(91)
+    fall = _day_norm_for(273)
+    assert abs(spring - (91 / 365.25)) < 1e-4, f"spring day frac wrong: {spring:.4f}"
+    assert abs(fall - (273 / 365.25)) < 1e-4, f"fall day frac wrong: {fall:.4f}"
+    assert abs(spring - fall) > 0.3, "atan2 must distinguish spring from fall"
 
-    day_got = captured["day_year_time"][0, 0, 0].item()
-    assert abs(day_got - expected_day_summer) < 1e-4, (
-        f"Expected day_normalized ≈ {expected_day_summer:.4f}, got {day_got:.4f}"
-    )
-
-    # Sanity: winter doy_cos=1 → day_normalized=0
-    x_winter = torch.randn(1, 13, 32, 64)
-    x_winter[:, -1] = doy_cos_winter
-    with torch.no_grad():
-        model(x_winter)
-    day_got_w = captured["day_year_time"][0, 0, 0].item()
-    assert abs(day_got_w - expected_day_winter) < 1e-4, (
-        f"Expected day_normalized=0 for winter, got {day_got_w:.4f}"
-    )
+    # Winter (day ~0) -> fraction ~0.
+    assert abs(_day_norm_for(0) - 0.0) < 1e-4
 
 
 import numpy as _np

@@ -74,13 +74,15 @@ def daily_init_weekly_windows(
       targets (N, n_lead_weeks, n_out_vars, lat, lon)   float32
       time    (N,) datetime64  -- init dates
     """
-    from s2s.data.assemble import input_vars, pack_windows, target_vars
+    from s2s.data.assemble import _SST_VAR, input_vars, pack_windows, sst_extra_lags, target_vars
 
     history_weeks = int(cfg.data.history_weeks)
     lead_weeks = list(cfg.data.lead_weeks)
     max_lead = max(lead_weeks)
     in_vars = input_vars(cfg)
     out_vars = target_vars(cfg)
+    lags = sst_extra_lags(cfg)
+    max_lag_w = max(lags) if lags else 0  # deepest extra SST lag, in weeks
 
     # 7-day backward rolling mean: rolled[d] = mean(days d-6 .. d).
     # NaN for d < 6 (< 7 days available from the split start).
@@ -100,6 +102,7 @@ def daily_init_weekly_windows(
 
     doy_vals = times.dayofyear.values.astype(np.float64)
     doy_cos = np.cos(2 * np.pi * doy_vals / 365.25).astype(np.float32)
+    doy_sin = np.sin(2 * np.pi * doy_vals / 365.25).astype(np.float32)
 
     # ---- valid init-index range ----------------------------------------
     # Oldest history window: rolled index t - 7*(history_weeks-1).
@@ -108,7 +111,7 @@ def daily_init_weekly_windows(
     # Latest lead window: rolled index t + 7*max_lead + 6.
     #   Needs to be < n_time.
     #   => t <= n_time - 7*max_lead - 7
-    t_min = 7 * (history_weeks - 1) + 6
+    t_min = 7 * max(history_weeks - 1, max_lag_w) + 6  # deepest lookback: history or SST lag
     t_max = n_time - 7 * max_lead - 7
 
     n_in_vars = len(in_vars)
@@ -118,7 +121,7 @@ def daily_init_weekly_windows(
     if t_max < t_min:
         # Split too short to produce any sample (e.g. tiny dev subset).
         return {
-            "inputs": np.empty((0, history_weeks * n_in_vars + 1, lat, lon), dtype=np.float32),
+            "inputs": np.empty((0, history_weeks * n_in_vars + len(lags) + 2, lat, lon), dtype=np.float32),
             "targets": np.empty((0, n_leads, n_out_vars, lat, lon), dtype=np.float32),
             "time": np.array([], dtype="datetime64[ns]"),
         }
@@ -126,11 +129,11 @@ def daily_init_weekly_windows(
     valid_idx = np.arange(t_min, t_max + 1, stride_days)
 
     # ---- LEAKAGE ASSERTIONS -------------------------------------------
-    # oldest history index for first valid sample
-    oldest_idx = int(valid_idx[0]) - 7 * (history_weeks - 1)
+    # oldest lookback index for first valid sample (history OR deepest SST lag)
+    oldest_idx = int(valid_idx[0]) - 7 * max(history_weeks - 1, max_lag_w)
     assert oldest_idx >= 6, (
-        f"daily_init_weekly_windows: oldest history rolled index={oldest_idx} < 6 "
-        f"(rolling mean would be NaN -- split boundary or embargo misconfigured)"
+        f"daily_init_weekly_windows: oldest lookback rolled index={oldest_idx} < 6 "
+        f"(rolling mean would be NaN -- split boundary, embargo, or SST lag misconfigured)"
     )
     # latest lead index for last valid sample
     latest_idx = int(valid_idx[-1]) + 7 * max_lead + 6
@@ -152,5 +155,15 @@ def daily_init_weekly_windows(
     lead_idx = valid_idx[:, None] + lead_offsets[None, :]                    # (N, n_leads)
     out_leads = out_stack[:, lead_idx, :, :].transpose(1, 2, 0, 3, 4).astype(np.float32)
 
-    inputs, targets = pack_windows(in_hist, out_leads, doy_cos[valid_idx])
+    # ---- extra SST-history channels at week-lags (ADR-0006) --------------
+    if lags:
+        sst_series = np.nan_to_num(_tlatlon(_SST_VAR), nan=0.0)     # (T, lat, lon)
+        sst_idx = valid_idx[:, None] - 7 * np.array(lags)[None, :]  # (N, n_lags) daily indices
+        sst_extra = sst_series[sst_idx].astype(np.float32)         # (N, n_lags, lat, lon)
+    else:
+        sst_extra = None
+
+    inputs, targets = pack_windows(
+        in_hist, out_leads, doy_cos[valid_idx], doy_sin[valid_idx], sst_extra
+    )
     return {"inputs": inputs, "targets": targets, "time": np.array(times[valid_idx])}
