@@ -80,6 +80,17 @@ def _latweighted_spatial_mean(da: xr.DataArray) -> float:
     return float((flat * w).sum("latitude") / w.sum())
 
 
+def _latweighted_per_sample(da: xr.DataArray) -> np.ndarray:
+    """Lat-weighted spatial mean per time step -> (n_time,). Same recipe as the
+    probabilistic-clim per-sample reference: nanmean over longitude, then
+    cos(lat)-weighted average over latitude. mean() of this equals
+    _latweighted_spatial_mean(da) up to NaN handling."""
+    arr = da.transpose("time", "latitude", "longitude").values  # (N, lat, lon)
+    w = np.cos(np.deg2rad(da["latitude"].values))
+    per_lat = np.nanmean(arr, axis=2)                           # (N, lat)
+    return np.average(per_lat, axis=1, weights=w)               # (N,)
+
+
 def _train_weekly_anom(cfg, var):
     """TRAIN weekly-mean anomalies (physical-unit anomalies) for one var, with time."""
     processed = Path(cfg.data.paths.processed)
@@ -220,6 +231,7 @@ def main(cfg: DictConfig) -> None:
         init_times = init_times[-n_samples:]
 
     rows = []
+    year_rows = []  # per-(variable, lead, calendar-year) CRPSS for the separate CSV
     rank_store = {}
     reliab = {ev["name"]: {"p": [], "y": []} for ev in cfg.eval.reliability.events}
 
@@ -240,7 +252,9 @@ def main(cfg: DictConfig) -> None:
             # ---- CRPS: model + deterministic clim ----
             crps_model_f = truth_da.copy(data=crps_ensemble(members, truth, fair=crps_fair))
             crps_detclim_f = truth_da.copy(data=crps_ensemble(zero[np.newaxis, ...], truth))
-            crps_model = _latweighted_spatial_mean(_india_box(crps_model_f, cfg))
+            crps_model_box = _india_box(crps_model_f, cfg)
+            crps_model = _latweighted_spatial_mean(crps_model_box)
+            crps_model_samples = _latweighted_per_sample(crps_model_box)  # (N,) for bootstrap
             crps_detclim = _latweighted_spatial_mean(_india_box(crps_detclim_f, cfg))
 
             # ---- CRPS: probabilistic clim (woy-windowed train pool), per sample ----
@@ -260,6 +274,24 @@ def main(cfg: DictConfig) -> None:
 
             skill_det = crpss(crps_model, crps_detclim)
             skill_prob = crpss(crps_model, crps_probclim)
+
+            # ---- paired bootstrap 95% CIs on crpss_vs_prob (Fix 2 / C2) ----
+            # Resample paired per-sample CRPS (model vs prob-clim reference); no retrain.
+            boot_cfg = cfg.eval.get("bootstrap", {}) or {}
+            block_len = int(boot_cfg.get("block_len", 8))
+            n_boot = int(boot_cfg.get("n_boot", 5000))
+            boot_seed = int(boot_cfg.get("seed", 0))
+            init_years = pd.DatetimeIndex(init_times).year.values
+            blk = block_bootstrap_crpss(
+                crps_model_samples, crps_prob_samples,
+                block_len=block_len, n_boot=n_boot, seed=boot_seed,
+            )
+            yr = year_bootstrap_crpss(
+                crps_model_samples, crps_prob_samples,
+                init_years, n_boot=n_boot, seed=boot_seed,
+            )
+            for _r in crpss_by_year(crps_model_samples, crps_prob_samples, init_years):
+                year_rows.append({"variable": var, "lead_week": lead_week, **_r})
 
             # ---- deterministic ACC / RMSE of the ensemble mean (lat-weighted) ----
             ens_mean = members.mean(axis=0)      # (N, lat, lon)
@@ -316,6 +348,13 @@ def main(cfg: DictConfig) -> None:
                 "crps_clim_prob": crps_probclim,
                 "crpss_vs_det": skill_det,
                 "crpss_vs_prob": skill_prob,
+                "crpss_vs_prob_ci_lo": blk["ci_lo"],
+                "crpss_vs_prob_ci_hi": blk["ci_hi"],
+                "crpss_vs_prob_boot_se": blk["boot_se"],
+                "crpss_vs_prob_ci_lo_yr": yr["ci_lo"],
+                "crpss_vs_prob_ci_hi_yr": yr["ci_hi"],
+                "boot_block_len": blk["block_len"],
+                "boot_n": blk["n_boot"],
                 "acc_mean": acc_box,
                 "rmse_mean": rmse_box,
                 "spread_error_ratio": ser,
@@ -324,6 +363,10 @@ def main(cfg: DictConfig) -> None:
     table = pd.DataFrame(rows)
     csv_path = results_dir / "metrics.csv"
     table.to_csv(csv_path, index=False)
+
+    # Per-calendar-year CRPSS vs probabilistic climatology (Fix 2 / C2 sensitivity).
+    year_table = pd.DataFrame(year_rows)
+    year_table.to_csv(results_dir / "crpss_by_year.csv", index=False)
 
     # ---- rank-hist plots ----
     for (var, k), counts in rank_store.items():
@@ -351,22 +394,35 @@ def main(cfg: DictConfig) -> None:
         plt.close(fig)
 
     print("\n=== Honest eval -- India box, test split, PHYSICAL units ===\n")
+    _ci_cols = ["crps_model", "crpss_vs_prob", "crpss_vs_prob_ci_lo",
+                "crpss_vs_prob_ci_hi", "crpss_vs_prob_ci_lo_yr",
+                "crpss_vs_prob_ci_hi_yr", "spread_error_ratio"]
     for var in out_vars:
-        sub = table[table["variable"] == var].drop(columns="variable").set_index("lead_week")
-        print(f"--- {var} ---")
-        print(sub.to_string(float_format=lambda v: f"{v:.5f}"))
+        sub = table[table["variable"] == var].set_index("lead_week")
+        print(f"--- {var} ---  (crpss_vs_prob with 95% block CI [ci_lo, ci_hi]; *_yr = per-year resample)")
+        print(sub[_ci_cols].to_string(float_format=lambda v: f"{v:.5f}"))
         print()
 
     gate_leads = list(cfg.eval.gate.lead_week)
     gate_thr = float(cfg.eval.gate.get("threshold", 0.0))
     g = table[table["lead_week"].isin(gate_leads)]
     gate_pass = bool((g["crpss_vs_prob"] > gate_thr).all()) if len(g) else False
+    # CI-aware gate: does the 95% block CI exclude the threshold for EVERY gate cell?
+    ci_excludes = bool((g["crpss_vs_prob_ci_lo"] > gate_thr).all()) if len(g) else False
     print(
         f"Decision gate (lead weeks {gate_leads}, metric={cfg.eval.gate.metric} "
         f"vs {cfg.eval.gate.reference}, threshold {gate_thr}): "
-        f"{'PASS' if gate_pass else 'FAIL'}"
+        f"{'PASS' if gate_pass else 'FAIL'}  "
+        f"[95% block CI excludes {gate_thr} at all gate cells: {'YES' if ci_excludes else 'NO'}]"
     )
-    print(f"\nSaved: {csv_path} + rank-hist/reliability PNGs in {results_dir}")
+    for _, r in g.iterrows():
+        print(
+            f"    {r['variable']:<24} wk{int(r['lead_week'])}: "
+            f"crpss_vs_prob={r['crpss_vs_prob']:.4f} "
+            f"CI[{r['crpss_vs_prob_ci_lo']:.4f}, {r['crpss_vs_prob_ci_hi']:.4f}] "
+            f"yrCI[{r['crpss_vs_prob_ci_lo_yr']:.4f}, {r['crpss_vs_prob_ci_hi_yr']:.4f}]"
+        )
+    print(f"\nSaved: {csv_path}, {results_dir / 'crpss_by_year.csv'} + PNGs in {results_dir}")
 
 
 if __name__ == "__main__":

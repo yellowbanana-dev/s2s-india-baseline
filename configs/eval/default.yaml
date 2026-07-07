@@ -20,6 +20,15 @@ clim_woy_window: 3   # +/- weeks of year pooled into the climatological ensemble
 # compared on equal footing (biased 1/(2 M^2) disadvantages the smaller ensemble).
 crps_fair: true
 
+# Paired bootstrap 95% CIs on crpss_vs_prob (Fix 2 / C2). No retraining: resample
+# the per-sample CRPS pairs (model vs prob-clim). Moving-block is primary; the
+# per-calendar-year resample (written as *_yr columns) is an autocorrelation-robust
+# sensitivity. block_len is in WEEKS (test inits are weekly).
+bootstrap:
+  block_len: 8
+  n_boot: 5000
+  seed: 0
+
 # Reliability-diagram events. Relative events live in anomaly space; absolute
 # events are evaluated on RECONSTRUCTED weekly-mean PHYSICAL fields (train clim
 # added back; precip un-log1p'd). NOTE: these are WEEKLY-MEAN exceedances, not
