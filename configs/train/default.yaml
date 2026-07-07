@@ -5,6 +5,11 @@ lr: 3.0e-4
 # Bumped from 0.05 to 0.1: denser-data ViT benefits from stronger decoupled decay.
 weight_decay: 0.1
 optimizer: adamw
+
+# W&B experiment tracking. true (default) uses W&B, auto-falling back to OFFLINE
+# (local logs) when no credentials are configured; false skips W&B entirely.
+# CSV per-epoch metrics are always written regardless.
+wandb: true
 precision: bf16-mixed          # good fit for H100/A100
 num_workers: 8
 gradient_clip_val: 1.0
