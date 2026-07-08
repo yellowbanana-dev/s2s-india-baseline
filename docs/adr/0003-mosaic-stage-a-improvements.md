@@ -71,6 +71,10 @@ instead of passing zeros:
 ```
 doy_cos = x[:, -1, 0, 0]               # broadcast across spatial dims; scalar per sample
 day_normalized = arccos(doy_cos) / 2π  # ∈ [0, 0.5]
+# CORRECTION (Fix 5b/M5): the arccos fold below loses the sign of sin and
+# maps spring/autumn (and Jan/Dec) to the same value. Superseded: the pipeline
+# now carries BOTH doy_cos and doy_sin channels and the adapter recovers the
+# true phase via day_normalized = atan2(doy_sin, doy_cos)/2π (mod 1) ∈ [0,1).
 day_year_time[:, 0, 0] = day_normalized
 ```
 

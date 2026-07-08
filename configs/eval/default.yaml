@@ -31,7 +31,7 @@ reliability:
     - {name: precip_anom_positive, variable: total_precipitation_24hr, space: anomaly,  comparison: gt, threshold: 0.0}
     # India-context absolute thresholds (weekly-mean physical):
     - {name: extreme_heat_40C,     variable: 2m_temperature,           space: physical, comparison: gt, threshold: 313.15}  # 40 C in Kelvin
-    - {name: heavy_rain_50mm,      variable: total_precipitation_24hr, space: physical, comparison: gt, threshold: 0.050}   # 50 mm/day in m/24h
+    - {name: heavy_rain_50mm,      variable: total_precipitation_24hr, space: physical, comparison: gt, threshold: 50.0}    # 50 mm/day (precip is mm/day after Fix 4)
 
 # Decision gate: now scored against the PROBABILISTIC climatology (CRPSS > 0),
 # the honest Phase-B bar -- stricter than Phase A's deterministic gate.

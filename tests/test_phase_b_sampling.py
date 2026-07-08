@@ -75,7 +75,7 @@ def test_daily_strided_no_cross_boundary_leakage():
 
     Strategy: slice a synthetic daily dataset at a hard boundary (day 200).
     Build windows from the first portion only.  Assert every emitted sample's
-    full day span [init - 7*(history_weeks-1) - 6 .. init + 7*max_lead + 6]
+    full day span [init - 7*(history_weeks-1) - 6 .. init + 7*max_lead]
     stays within the first portion.
     """
     cfg = _make_cfg(history_weeks=2, lead_weeks=[1, 2, 3, 4, 5, 6])
@@ -95,7 +95,7 @@ def test_daily_strided_no_cross_boundary_leakage():
     init_times = pd.DatetimeIndex(out["time"])
     # Earliest and latest calendar day touched by any sample
     earliest_history = init_times.min() - pd.Timedelta(days=7 * (history_weeks - 1) + 6)
-    latest_lead = init_times.max() + pd.Timedelta(days=7 * max_lead + 6)
+    latest_lead = init_times.max() + pd.Timedelta(days=7 * max_lead)
 
     split_start = pd.Timestamp(train_part.time.values[0])
     split_end = pd.Timestamp(train_part.time.values[-1])

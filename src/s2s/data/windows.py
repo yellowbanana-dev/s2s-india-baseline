@@ -56,8 +56,15 @@ def daily_init_weekly_windows(
           rolling 7-day backward mean ending at t - 7*h
           i.e. mean of days [t - 7*h - 6 .. t - 7*h]
       Lead week L  (L from cfg.data.lead_weeks):
-          rolling 7-day backward mean ending at t + 7*L + 6
-          i.e. mean of days [t + 7*L .. t + 7*L + 6]
+          rolling 7-day backward mean ending at t + 7*L
+          i.e. mean of days [t + 7*L - 6 .. t + 7*L]
+
+    ALIGNMENT (Fix 5a/M4): the lead window ENDS at t+7*L, not t+7*L+6. This makes
+    the daily-strided TRAIN target the same 7 calendar days the W-MON TEST bins use:
+    for an init whose most-recent history day is t, test lead-L is the weekly bin
+    [t-6+7L .. t+7L] (0-day gap between history end and target start). The previous
+    +6 offset made train targets end 6 days later than test -- a silent train/test
+    lead mismatch.
 
     Uses rolling(time=7, min_periods=7): the first 6 positions of the rolled
     array are NaN, which naturally prevents any sample from using days that
@@ -100,16 +107,17 @@ def daily_init_weekly_windows(
 
     doy_vals = times.dayofyear.values.astype(np.float64)
     doy_cos = np.cos(2 * np.pi * doy_vals / 365.25).astype(np.float32)
+    doy_sin = np.sin(2 * np.pi * doy_vals / 365.25).astype(np.float32)
 
     # ---- valid init-index range ----------------------------------------
     # Oldest history window: rolled index t - 7*(history_weeks-1).
     #   Needs to be >= 6 so the 7-day rolling mean is not NaN.
     #   => t >= 7*(history_weeks-1) + 6
-    # Latest lead window: rolled index t + 7*max_lead + 6.
+    # Latest lead window: rolled index t + 7*max_lead (ends at t+7*max_lead; Fix 5a).
     #   Needs to be < n_time.
-    #   => t <= n_time - 7*max_lead - 7
+    #   => t <= n_time - 7*max_lead - 1
     t_min = 7 * (history_weeks - 1) + 6
-    t_max = n_time - 7 * max_lead - 7
+    t_max = n_time - 7 * max_lead - 1
 
     n_in_vars = len(in_vars)
     n_out_vars = len(out_vars)
@@ -118,7 +126,7 @@ def daily_init_weekly_windows(
     if t_max < t_min:
         # Split too short to produce any sample (e.g. tiny dev subset).
         return {
-            "inputs": np.empty((0, history_weeks * n_in_vars + 1, lat, lon), dtype=np.float32),
+            "inputs": np.empty((0, history_weeks * n_in_vars + 2, lat, lon), dtype=np.float32),
             "targets": np.empty((0, n_leads, n_out_vars, lat, lon), dtype=np.float32),
             "time": np.array([], dtype="datetime64[ns]"),
         }
@@ -133,7 +141,7 @@ def daily_init_weekly_windows(
         f"(rolling mean would be NaN -- split boundary or embargo misconfigured)"
     )
     # latest lead index for last valid sample
-    latest_idx = int(valid_idx[-1]) + 7 * max_lead + 6
+    latest_idx = int(valid_idx[-1]) + 7 * max_lead
     assert latest_idx < n_time, (
         f"daily_init_weekly_windows: latest lead rolled index={latest_idx} >= n_time={n_time} "
         f"(lead window exceeds split data -- cross-boundary leakage)"
@@ -147,10 +155,11 @@ def daily_init_weekly_windows(
     in_hist = in_stack[:, hist_idx, :, :].transpose(1, 2, 0, 3, 4).astype(np.float32)
 
     # ---- build lead windows (N, n_leads, n_out_vars, lat, lon) -----------
-    # Lead L: rolled index t + 7*L + 6  (mean of days t+7L .. t+7L+6)
-    lead_offsets = 7 * np.array(lead_weeks) + 6                              # (n_leads,)
+    # Lead L: rolled index t + 7*L  (mean of days t+7L-6 .. t+7L); aligned to the
+    # W-MON test bins (Fix 5a). Ends at t+7L, NOT t+7L+6.
+    lead_offsets = 7 * np.array(lead_weeks)                                  # (n_leads,)
     lead_idx = valid_idx[:, None] + lead_offsets[None, :]                    # (N, n_leads)
     out_leads = out_stack[:, lead_idx, :, :].transpose(1, 2, 0, 3, 4).astype(np.float32)
 
-    inputs, targets = pack_windows(in_hist, out_leads, doy_cos[valid_idx])
+    inputs, targets = pack_windows(in_hist, out_leads, doy_cos[valid_idx], doy_sin[valid_idx])
     return {"inputs": inputs, "targets": targets, "time": np.array(times[valid_idx])}

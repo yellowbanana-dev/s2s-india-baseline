@@ -26,7 +26,8 @@ that output channels = n_lead * C_out (=12) instead of len(variables) (=13).
 
 `num_noise_samples`=1 → deterministic (B,lead,C,lat,lon); >1 → ensemble
                   (B,M,lead,C,lat,lon) via Mosaic's NoiseGenerator (Phase-B Stage B).
-`day_year_time` — day_normalized derived from doy_cos input channel (C_in[-1]) via arccos;
+`day_year_time` — day_normalized derived from the (doy_cos, doy_sin) input channels
+(C_in[-2], C_in[-1]) via atan2 for the true year phase (Fix 5b/M5);
                   year left at 0 (not in batch). See forward() for the mapping.
 `static_variables=[]` — no static fields yet; space_dim=3 XYZ coords are always
                         appended by initialize_static_vars.
@@ -157,13 +158,16 @@ class MosaicBackbone(nn.Module):
             raise ValueError(f"expected grid {_GRID}, got {(lat, lon)}")
         M = int(num_noise_samples)
 
-        # Extract day_normalized BEFORE permuting x.
-        # doy_cos = cos(2π·doy/365.25) is broadcast uniformly in the last input channel (C_in[-1]).
-        # arccos maps to [0,π]; /2π → day_normalized ∈ [0, 0.5].
-        # time_embedding then computes cos(2π·d)=doy_cos and sin(2π·d)=|doy_sin|.
-        # Year stays 0 (sin=0, cos=1) — year is not in the batch.
-        doy_cos_vals = x[:, -1, 0, 0].clamp(-1.0, 1.0)  # (B,), spatial broadcast → [0,0] is representative
-        day_normalized = torch.arccos(doy_cos_vals) / (2.0 * math.pi)  # (B,) in [0, 0.5]
+        # Extract day_normalized BEFORE permuting x. The last TWO input channels are
+        # doy_cos (C_in[-2]) and doy_sin (C_in[-1]) (Fix 5b/M5), broadcast uniformly
+        # over space. atan2(sin, cos) recovers the TRUE phase in (-π, π]; /2π (+1 mod 1)
+        # gives day_normalized ∈ [0, 1). Previously only doy_cos was available and
+        # arccos folded the year in half ([0, 0.5]), so Jan/Dec (and spring/autumn)
+        # were indistinguishable to the seasonal embedding. Year stays 0.
+        doy_cos_vals = x[:, -2, 0, 0]  # (B,), spatial broadcast → [0,0] is representative
+        doy_sin_vals = x[:, -1, 0, 0]  # (B,)
+        day_normalized = torch.atan2(doy_sin_vals, doy_cos_vals) / (2.0 * math.pi)  # (B,) in (-0.5, 0.5]
+        day_normalized = day_normalized % 1.0  # -> [0, 1)
         day_year_time = torch.zeros(b, 1, 2, device=x.device, dtype=x.dtype)
         day_year_time[:, 0, 0] = day_normalized
 

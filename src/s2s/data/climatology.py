@@ -19,7 +19,15 @@ from s2s.data.windows import daily_to_weekly_mean
 # anomalies. Hardcoded (not read from cfg.data.precip_transform) because both
 # fit_climatology and to_anomaly must apply the IDENTICAL transform regardless
 # of call order, and log1p is the only transform this project supports.
+#
+# UNITS (Fix 4/M2): WB2 total_precipitation_24hr is accumulated METRES/24h
+# (typically 1e-4..5e-2). log1p(x)=log(1+x)~=x for x this small -> the transform
+# was a numerical no-op, doing none of the skew-compression it exists for. We
+# convert to mm/day (x1000) BEFORE log1p so the compression is real
+# (log1p(50mm)=3.9 vs log1p(0.05m)=0.049). Physical precip is therefore mm/day
+# everywhere downstream (anomaly space is log1p(mm/day); expm1 -> mm/day).
 _PRECIP_VAR = "total_precipitation_24hr"
+_M_TO_MM = 1000.0  # metres/24h -> mm/day
 _DEFAULT_SMOOTH_DAYS = 11
 
 
@@ -27,7 +35,7 @@ def _log1p_precip(ds: xr.Dataset) -> xr.Dataset:
     if _PRECIP_VAR not in ds.data_vars:
         return ds
     ds = ds.copy()
-    ds[_PRECIP_VAR] = np.log1p(ds[_PRECIP_VAR])
+    ds[_PRECIP_VAR] = np.log1p(ds[_PRECIP_VAR] * _M_TO_MM)
     return ds
 
 
