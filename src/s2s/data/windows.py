@@ -74,7 +74,10 @@ def daily_init_weekly_windows(
       targets (N, n_lead_weeks, n_out_vars, lat, lon)   float32
       time    (N,) datetime64  -- init dates
     """
-    from s2s.data.assemble import _SST_VAR, input_vars, pack_windows, sst_extra_lags, target_vars
+    from s2s.data.assemble import (
+        _SST_VAR, compute_sst_index_series, input_vars, pack_windows,
+        sst_extra_lags, sst_index_block, sst_index_names, sst_index_lags, target_vars,
+    )
 
     history_weeks = int(cfg.data.history_weeks)
     lead_weeks = list(cfg.data.lead_weeks)
@@ -82,7 +85,9 @@ def daily_init_weekly_windows(
     in_vars = input_vars(cfg)
     out_vars = target_vars(cfg)
     lags = sst_extra_lags(cfg)
-    max_lag_w = max(lags) if lags else 0  # deepest extra SST lag, in weeks
+    idx_names = sst_index_names(cfg)
+    idx_lags = sst_index_lags(cfg)
+    max_lag_w = max([0] + lags + (idx_lags if idx_names else []))  # deepest raw/index lag, weeks
 
     # 7-day backward rolling mean: rolled[d] = mean(days d-6 .. d).
     # NaN for d < 6 (< 7 days available from the split start).
@@ -121,7 +126,7 @@ def daily_init_weekly_windows(
     if t_max < t_min:
         # Split too short to produce any sample (e.g. tiny dev subset).
         return {
-            "inputs": np.empty((0, history_weeks * n_in_vars + len(lags) + 2, lat, lon), dtype=np.float32),
+            "inputs": np.empty((0, history_weeks * n_in_vars + len(lags) + len(idx_names) * len(idx_lags) + 2, lat, lon), dtype=np.float32),
             "targets": np.empty((0, n_leads, n_out_vars, lat, lon), dtype=np.float32),
             "time": np.array([], dtype="datetime64[ns]"),
         }
@@ -155,13 +160,16 @@ def daily_init_weekly_windows(
     lead_idx = valid_idx[:, None] + lead_offsets[None, :]                    # (N, n_leads)
     out_leads = out_stack[:, lead_idx, :, :].transpose(1, 2, 0, 3, 4).astype(np.float32)
 
-    # ---- extra SST-history channels at week-lags (ADR-0006) --------------
+    # ---- extra channels: raw SST-history lags (ADR-0006) + SST indices (ADR-0007) ----
+    extra_parts = []
     if lags:
         sst_series = np.nan_to_num(_tlatlon(_SST_VAR), nan=0.0)     # (T, lat, lon)
         sst_idx = valid_idx[:, None] - 7 * np.array(lags)[None, :]  # (N, n_lags) daily indices
-        sst_extra = sst_series[sst_idx].astype(np.float32)         # (N, n_lags, lat, lon)
-    else:
-        sst_extra = None
+        extra_parts.append(sst_series[sst_idx].astype(np.float32))  # (N, n_lags, lat, lon)
+    if idx_names:
+        idx_series = compute_sst_index_series(rolled, cfg)          # rolled = 7-day-mean SST
+        extra_parts.append(sst_index_block(idx_series, valid_idx, idx_lags, 7, lat, lon))
+    sst_extra = np.concatenate(extra_parts, axis=1) if extra_parts else None
 
     inputs, targets = pack_windows(
         in_hist, out_leads, doy_cos[valid_idx], doy_sin[valid_idx], sst_extra

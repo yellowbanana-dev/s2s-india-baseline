@@ -78,6 +78,49 @@ def test_sst_extra_lags_add_channels_and_carry_lagged_values():
         np.testing.assert_allclose(out["inputs"][0, body + j], sst[12 - lag], rtol=1e-5)
 
 
+def test_sst_indices_add_channels_and_track_enso():
+    """ADR-0007: sst_indices add low-dim broadcast channels after history/raw-SST and
+    before the seasonal pair; the nino34 channel tracks the Nino 3.4 SST box."""
+    from s2s.data.assemble import (input_vars, sst_index_names,
+        n_sst_index_channels)
+    cfg = _make_cfg(history_weeks=2)
+    cfg.data.sst_indices = ["nino34", "dmi"]
+    cfg.data.sst_index_lags_weeks = [0]
+    assert sst_index_names(cfg) == ["nino34", "dmi"]
+    assert n_sst_index_channels(cfg) == 2
+
+    n_in = len(input_vars(cfg))
+    in_channels, _ = in_out_channels(cfg)
+    assert in_channels == n_in * 2 + 2 + 2   # history + 2 indices + (cos,sin)
+
+    # 32x64 WB2 grid so the Nino 3.4 box (5S-5N, 170W-120W) contains cells.
+    lat = -90 + 5.625 / 2 + np.arange(32) * 5.625
+    lon = np.arange(64) * 5.625
+
+    def _weekly(nino_warm):
+        rng = np.random.default_rng(0)
+        t = pd.date_range("2010-01-04", periods=20, freq="7D")
+        sh = (20, 32, 64)
+        dv = {k: (("time", "latitude", "longitude"), rng.normal(size=sh).astype(np.float32))
+              for k in ["2m_temperature", "total_precipitation_24hr", "sea_surface_temperature",
+                        "geopotential_500", "u_component_of_wind_850", "u_component_of_wind_200"]}
+        ds = xr.Dataset(dv, coords={"time": t, "latitude": lat, "longitude": lon})
+        if nino_warm:
+            m = (lat >= -5) & (lat <= 5); nn = (lon >= 190) & (lon <= 240)
+            ds["sea_surface_temperature"].loc[dict(latitude=lat[m], longitude=lon[nn])] += nino_warm
+        return ds
+
+    out_warm = assemble_arrays(_weekly(2.0), cfg)
+    out_neut = assemble_arrays(_weekly(0.0), cfg)
+    assert out_warm["inputs"].shape[1] == in_channels
+    body = n_in * 2  # index channels sit right after the history stack (no raw-SST lags)
+    # nino34 channel tracks the warm box; channel is spatially uniform (broadcast)
+    assert out_warm["inputs"][:, body, 0, 0].mean() > out_neut["inputs"][:, body, 0, 0].mean() + 1.0
+    assert np.allclose(out_warm["inputs"][0, body], out_warm["inputs"][0, body, 0, 0])
+    # seasonal pair remains the last two channels
+    assert not np.allclose(out_warm["inputs"][:, -2, 0, 0], out_warm["inputs"][:, -1, 0, 0])
+
+
 def test_seasonal_pair_is_last_two_channels():
     """doy_cos then doy_sin occupy the final two channels (MosaicBackbone contract)."""
     cfg = _make_cfg(history_weeks=2)

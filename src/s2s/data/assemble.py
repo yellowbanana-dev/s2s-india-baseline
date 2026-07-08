@@ -59,11 +59,84 @@ def n_sst_extra(cfg) -> int:
     return len(sst_extra_lags(cfg))
 
 
+# ENSO / IOD teleconnection index boxes (lon in 0-360, lat in deg), as signed
+# area-weighted SST-anomaly box means (ADR-0007). Computed from the pipeline's
+# train-standardized SST anomaly field -> leakage-safe; a monotone proxy for the
+# conventional raw-anomaly indices (noted in ADR-0007).
+#   nino34 : ENSO,  Nino 3.4 region (5S-5N, 170W-120W)
+#   dmi    : IOD Dipole Mode Index = West (10S-10N, 50-70E) minus East (10S-0, 90-110E)
+_SST_INDEX_BOXES = {
+    "nino34": [(-5.0, 5.0, 190.0, 240.0, 1.0)],
+    "dmi": [(-10.0, 10.0, 50.0, 70.0, 1.0), (-10.0, 0.0, 90.0, 110.0, -1.0)],
+}
+
+
+def sst_index_names(cfg) -> list[str]:
+    """Configured SST-derived indices (data.sst_indices). Empty unless SST is a
+    predictor and the names are recognised."""
+    names = list(getattr(cfg.data, "sst_indices", None) or [])
+    if not names:
+        return []
+    if _SST_VAR not in list(cfg.data.variables.predictors.surface or []):
+        return []
+    return [n for n in names if n in _SST_INDEX_BOXES]
+
+
+def sst_index_lags(cfg) -> list[int]:
+    """Week-lags at which each index is sampled (data.sst_index_lags_weeks). Default [0]."""
+    return [int(l) for l in (getattr(cfg.data, "sst_index_lags_weeks", None) or [0])]
+
+
+def n_sst_index_channels(cfg) -> int:
+    return len(sst_index_names(cfg)) * len(sst_index_lags(cfg))
+
+
+def _box_mean(sst_da, lat_min, lat_max, lon_min, lon_max):
+    """cos(lat)-weighted mean of an SST DataArray over a lat/lon box (skips land NaN)."""
+    lat = sst_da["latitude"]
+    lon = sst_da["longitude"]
+    mask = (
+        (lat >= min(lat_min, lat_max)) & (lat <= max(lat_min, lat_max))
+        & (lon >= lon_min) & (lon <= lon_max)
+    )
+    w = np.cos(np.deg2rad(lat))
+    return sst_da.where(mask).weighted(w).mean(("latitude", "longitude"), skipna=True)
+
+
+def compute_sst_index_series(ds, cfg) -> np.ndarray:
+    """(n_index_names, T) signed area-weighted SST-index time series over `ds`."""
+    names = sst_index_names(cfg)
+    if not names:
+        return np.zeros((0, ds.sizes["time"]), dtype=np.float32)
+    sst = ds[_SST_VAR]
+    series = []
+    for name in names:
+        total = None
+        for (la0, la1, lo0, lo1, sign) in _SST_INDEX_BOXES[name]:
+            bm = sign * _box_mean(sst, la0, la1, lo0, lo1)
+            total = bm if total is None else total + bm
+        series.append(np.nan_to_num(total.values.astype(np.float32), nan=0.0))
+    return np.stack(series, axis=0)  # (n_names, T)
+
+
+def sst_index_block(idx_series, valid_idx, lags, step, lat, lon):
+    """Broadcast per-sample index values to (N, n_names*n_lags, lat, lon).
+
+    idx_series (n_names, T); `step` = 1 for weekly index, 7 for daily index.
+    Channel order is lag-major: [lag0_name0, lag0_name1, ..., lag1_name0, ...].
+    """
+    N = valid_idx.shape[0]
+    cols = [idx_series[:, valid_idx - step * lag].T for lag in lags]  # each (N, n_names)
+    stacked = np.concatenate(cols, axis=1).astype(np.float32)         # (N, n_names*n_lags)
+    C = stacked.shape[1]
+    return np.broadcast_to(stacked[:, :, None, None], (N, C, lat, lon)).astype(np.float32)
+
+
 def in_out_channels(cfg) -> tuple[int, int]:
     """(in_channels, out_channels) for building the model -- matches assemble_arrays exactly."""
     history_weeks = int(cfg.data.history_weeks)
     # history stack + extra SST-lag channels (ADR-0006) + 2 seasonal (doy_cos, doy_sin)
-    in_channels = history_weeks * len(input_vars(cfg)) + n_sst_extra(cfg) + 2
+    in_channels = history_weeks * len(input_vars(cfg)) + n_sst_extra(cfg) + n_sst_index_channels(cfg) + 2
     out_channels = len(target_vars(cfg))
     return in_channels, out_channels
 
@@ -133,10 +206,12 @@ def assemble_arrays(weekly: xr.Dataset, cfg) -> dict:
     out_vars = target_vars(cfg)
 
     lags = sst_extra_lags(cfg)
-    max_lag = max(lags) if lags else 0
+    idx_names = sst_index_names(cfg)
+    idx_lags = sst_index_lags(cfg)
+    max_lag = max([history_weeks - 1] + lags + (idx_lags if idx_names else []))
 
     n_time = weekly.sizes["time"]
-    lo = max(history_weeks - 1, max_lag)   # deepest lookback = SST lag or history
+    lo = max_lag   # deepest lookback: history, raw-SST lag, or SST-index lag
     hi = n_time - max_lead
     if hi <= lo:
         raise ValueError(
@@ -158,11 +233,17 @@ def assemble_arrays(weekly: xr.Dataset, cfg) -> dict:
     doy_cos = np.cos(2 * np.pi * doy / 365.25).astype(np.float32)
     doy_sin = np.sin(2 * np.pi * doy / 365.25).astype(np.float32)
 
-    # Extra SST-history channels at the configured week-lags (ADR-0006).
+    # Extra channels: raw SST-history lags (ADR-0006) + SST-index channels (ADR-0007).
+    extra_parts = []
     if lags:
         sst_series = np.nan_to_num(_tlatlon(_SST_VAR), nan=0.0)  # (T, lat, lon)
         sst_idx = valid_idx[:, None] - np.array(lags)[None, :]   # (N, n_lags) weekly indices
-        sst_extra = sst_series[sst_idx]                          # (N, n_lags, lat, lon)
+        extra_parts.append(sst_series[sst_idx])                 # (N, n_lags, lat, lon)
+    if idx_names:
+        idx_series = compute_sst_index_series(weekly, cfg)
+        extra_parts.append(sst_index_block(idx_series, valid_idx, idx_lags, 1, lat, lon))
+    if extra_parts:
+        sst_extra = np.concatenate(extra_parts, axis=1)
     else:
         sst_extra = None
 

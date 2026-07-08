@@ -37,10 +37,15 @@ eval_box:                      # lat/lon bounds for scoring only
 lead_weeks: [1, 2, 3, 4, 5, 6]
 history_weeks: 2               # weeks of past state fed as input
 
-# Extra SST-history lags (weeks) beyond the shared history_weeks stack (ADR-0006,
-# lever b). Spaced (not contiguous) to capture SST tendency/evolution while
-# limiting collinearity/overfitting. [] disables it (pipeline unchanged).
-sst_history_lags_weeks: [4, 8, 12]
+# Raw SST-history lags (weeks). ADR-0007: found to be a null skill lever (it inflated
+# ensemble spread mechanically and hurt precip), so DISABLED by default. [] = off.
+sst_history_lags_weeks: []
+
+# SST teleconnection indices (ADR-0007, lever b increment 2): low-dim ENSO/IOD signal
+# as globally-broadcast channels, computed from the train-standardized SST anomaly field.
+#   nino34 = ENSO (Nino 3.4);  dmi = IOD Dipole Mode Index (West minus East)
+sst_indices: [nino34, dmi]
+sst_index_lags_weeks: [0]   # init-time; extend (e.g. [0, 8]) to add index tendency
 
 # Splits by year block. Stats (climatology, norm) come from TRAIN ONLY.
 splits:
