@@ -45,8 +45,10 @@ from s2s.data.datamodule import S2SDataModule
 from s2s.data.windows import daily_to_weekly_mean
 from s2s.eval.baselines import (
     climatology_woy_ensemble,
+    climatology_woy_polytrend_ensemble,
     climatology_woy_trend_ensemble,
     fit_linear_trend,
+    fit_poly_trend,
 )
 from s2s.eval.bootstrap import (
     block_bootstrap_crpss,
@@ -271,8 +273,10 @@ def main(cfg: DictConfig) -> None:
             woy = target_times.isocalendar().week.values.astype(int)
             crps_prob_samples = np.empty(n_samples)
             crps_trend_samples = np.empty(n_samples)  # trend-aware reference (Fix 3 / C1)
+            crps_trend2_samples = np.empty(n_samples)  # quadratic-trend sensitivity
             train_box = _india_box(train_weekly, cfg)
             trend_box = fit_linear_trend(train_box)   # per-gridpoint TRAIN-only slope
+            poly_box = fit_poly_trend(train_box, degree=2)  # quadratic (train-only)
             for s in range(n_samples):
                 t_box = _india_box(truth_da.isel(time=s), cfg)
                 w = np.cos(np.deg2rad(t_box["latitude"].values))
@@ -286,12 +290,20 @@ def main(cfg: DictConfig) -> None:
                 )
                 cft = crps_ensemble(clim_trend.values, t_box.values, fair=crps_fair)
                 crps_trend_samples[s] = float(np.average(np.nanmean(cft, axis=1), weights=w))
+                # (iii) SAME pool, quadratic detrend (residual-nonlinear-trend probe)
+                clim_trend2 = climatology_woy_polytrend_ensemble(
+                    train_box, int(woy[s]), target_times[s], window=woy_window, poly=poly_box
+                )
+                cft2 = crps_ensemble(clim_trend2.values, t_box.values, fair=crps_fair)
+                crps_trend2_samples[s] = float(np.average(np.nanmean(cft2, axis=1), weights=w))
             crps_probclim = float(np.mean(crps_prob_samples))
             crps_climtrend = float(np.mean(crps_trend_samples))
+            crps_climtrend2 = float(np.mean(crps_trend2_samples))
 
             skill_det = crpss(crps_model, crps_detclim)
             skill_prob = crpss(crps_model, crps_probclim)
             skill_trend = crpss(crps_model, crps_climtrend)
+            skill_trend2 = crpss(crps_model, crps_climtrend2)
 
             # ---- paired bootstrap 95% CIs on crpss_vs_prob (Fix 2 / C2) ----
             # Resample paired per-sample CRPS (model vs prob-clim reference); no retrain.
@@ -317,15 +329,21 @@ def main(cfg: DictConfig) -> None:
                 crps_model_samples, crps_trend_samples,
                 init_years, n_boot=n_boot, seed=boot_seed,
             )
+            blk_tr2 = block_bootstrap_crpss(
+                crps_model_samples, crps_trend2_samples,
+                block_len=block_len, n_boot=n_boot, seed=boot_seed,
+            )
             _by_prob = crpss_by_year(crps_model_samples, crps_prob_samples, init_years)
             _by_trend = crpss_by_year(crps_model_samples, crps_trend_samples, init_years)
-            for _rp, _rt in zip(_by_prob, _by_trend):
-                assert _rp["year"] == _rt["year"]
+            _by_trend2 = crpss_by_year(crps_model_samples, crps_trend2_samples, init_years)
+            for _rp, _rt, _rt2 in zip(_by_prob, _by_trend, _by_trend2):
+                assert _rp["year"] == _rt["year"] == _rt2["year"]
                 year_rows.append({
                     "variable": var, "lead_week": lead_week,
                     "year": _rp["year"], "n_samples": _rp["n_samples"],
                     "crpss_vs_prob": _rp["crpss_vs_prob"],
                     "crpss_vs_trend": _rt["crpss_vs_prob"],
+                    "crpss_vs_trend2": _rt2["crpss_vs_prob"],
                 })
 
             # ---- deterministic ACC / RMSE of the ensemble mean (lat-weighted) ----
@@ -395,6 +413,10 @@ def main(cfg: DictConfig) -> None:
                 "crpss_vs_trend_boot_se": blk_tr["boot_se"],
                 "crpss_vs_trend_ci_lo_yr": yr_tr["ci_lo"],
                 "crpss_vs_trend_ci_hi_yr": yr_tr["ci_hi"],
+                "crps_clim_trend2": crps_climtrend2,
+                "crpss_vs_trend2": skill_trend2,
+                "crpss_vs_trend2_ci_lo": blk_tr2["ci_lo"],
+                "crpss_vs_trend2_ci_hi": blk_tr2["ci_hi"],
                 "boot_block_len": blk["block_len"],
                 "boot_n": blk["n_boot"],
                 "acc_mean": acc_box,
@@ -436,9 +458,8 @@ def main(cfg: DictConfig) -> None:
         plt.close(fig)
 
     print("\n=== Honest eval -- India box, test split, PHYSICAL units ===\n")
-    _ci_cols = ["crps_model", "crpss_vs_prob", "crpss_vs_prob_ci_lo",
-                "crpss_vs_prob_ci_hi", "crpss_vs_trend", "crpss_vs_trend_ci_lo",
-                "crpss_vs_trend_ci_hi", "spread_error_ratio"]
+    _ci_cols = ["crps_model", "crpss_vs_prob", "crpss_vs_trend", "crpss_vs_trend_ci_lo",
+                "crpss_vs_trend_ci_hi", "crpss_vs_trend2", "spread_error_ratio"]
     for var in out_vars:
         sub = table[table["variable"] == var].set_index("lead_week")
         print(f"--- {var} ---  (crpss_vs_prob = plain WOY clim; crpss_vs_trend = trend-detrended clim; 95% block CI)")
@@ -482,7 +503,8 @@ def main(cfg: DictConfig) -> None:
     for _, r in wk6.iterrows():
         print(
             f"    {r['variable']:<24} crpss_vs_prob={r['crpss_vs_prob']:.4f}  "
-            f"crpss_vs_trend={r['crpss_vs_trend']:.4f}"
+            f"crpss_vs_trend={r['crpss_vs_trend']:.4f}  "
+            f"crpss_vs_trend2={r['crpss_vs_trend2']:.4f}"
         )
     print(f"\nSaved: {csv_path}, {results_dir / 'crpss_by_year.csv'} + PNGs in {results_dir}")
 

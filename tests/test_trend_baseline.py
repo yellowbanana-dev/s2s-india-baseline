@@ -106,3 +106,49 @@ def test_precomputed_trend_matches_internal_fit():
     a = climatology_woy_trend_ensemble(tw, woy, target_time, window=3, trend=tr)
     b = climatology_woy_trend_ensemble(tw, woy, target_time, window=3, trend=None)
     np.testing.assert_allclose(a.values, b.values, atol=1e-9)
+
+
+def test_polytrend_degree1_matches_linear_reference():
+    """degree=1 polynomial trend must reproduce the linear trend-aware ensemble."""
+    from s2s.eval.baselines import climatology_woy_polytrend_ensemble
+    tw = _weekly((1979, 2012), slope=0.06, noise=0.3, seed=5)
+    target_time = np.datetime64("2020-08-03")
+    woy = int(pd.Timestamp(target_time).isocalendar().week)
+    lin = climatology_woy_trend_ensemble(tw, woy, target_time, window=3)
+    poly1 = climatology_woy_polytrend_ensemble(tw, woy, target_time, window=3, degree=1)
+    np.testing.assert_allclose(poly1.transpose(*lin.dims).values, lin.values, atol=1e-6)
+
+
+def test_polytrend_degree2_recovers_quadratic_shift():
+    """With a purely quadratic warming, degree=2 removes it but degree=1 cannot."""
+    from s2s.eval.baselines import (
+        climatology_woy_ensemble,
+        climatology_woy_polytrend_ensemble,
+    )
+    from s2s.eval.metrics import crps_ensemble
+    # anomaly = c*(year - y0)^2  (accelerating warming), constant across gridpoints
+    rng = np.random.default_rng(7)
+    time = pd.date_range("1979-01-07", "2012-12-31", freq="7D")
+    dy = (time.year + (time.dayofyear - 1) / 365.25).values
+    c = 0.02
+    field = (c * (dy - 1979) ** 2)[:, None, None] + rng.normal(0, 0.05, size=(len(time), 2, 3))
+    tw = xr.DataArray(
+        field, dims=("time", "latitude", "longitude"),
+        coords={"time": time, "latitude": np.linspace(5, 35, 2), "longitude": np.linspace(70, 95, 3)},
+    )
+    target_time = np.datetime64("2020-07-06")
+    woy = int(pd.Timestamp(target_time).isocalendar().week)
+    dy_t = 2020 + (pd.Timestamp(target_time).dayofyear - 1) / 365.25
+    truth = np.full((1, 2, 3), c * (dy_t - 1979) ** 2)
+
+    plain = climatology_woy_ensemble(tw, woy, window=3).transpose("member", "latitude", "longitude")
+    lin = climatology_woy_polytrend_ensemble(tw, woy, target_time, window=3, degree=1).transpose(
+        "member", "latitude", "longitude")
+    quad = climatology_woy_polytrend_ensemble(tw, woy, target_time, window=3, degree=2).transpose(
+        "member", "latitude", "longitude")
+    crps_plain = float(np.mean(crps_ensemble(plain.values, truth, fair=True)))
+    crps_lin = float(np.mean(crps_ensemble(lin.values, truth, fair=True)))
+    crps_quad = float(np.mean(crps_ensemble(quad.values, truth, fair=True)))
+    # quadratic detrend fits an accelerating trend far better than linear or none
+    assert crps_quad < crps_lin
+    assert crps_quad < crps_plain

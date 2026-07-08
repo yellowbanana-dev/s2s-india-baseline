@@ -131,3 +131,65 @@ def climatology_woy_trend_ensemble(
     dt = xr.DataArray(t_target - t_member, dims=(member_dim,), coords={member_dim: pool[member_dim]})
     shift = trend * dt                                          # broadcast -> (member, lat, lon)
     return pool + shift
+
+
+class PolyTrend:
+    """Per-gridpoint polynomial trend fitted on TRAIN years only (Fix 3 sensitivity).
+
+    Generalises fit_linear_trend to degree>=1 so we can test whether the residual
+    lead-independent CRPSS 'floor' against the linear-detrended reference is really
+    linear-trend-residual (nonlinear warming) or a genuine calibrated-spread effect.
+    Coefficients are in increasing powers of the CENTRED decimal year (t - x_mean),
+    fitted by least squares. Train-only by construction.
+    """
+
+    def __init__(self, coeffs, x_mean, latitude, longitude):
+        self.coeffs = coeffs                 # (degree+1, lat, lon), increasing powers
+        self.x_mean = float(x_mean)
+        self.latitude = latitude
+        self.longitude = longitude
+
+    def evaluate(self, times):
+        import numpy as np
+        xc = _decimal_year(times) - self.x_mean            # (n,)
+        powers = np.stack([xc ** k for k in range(self.coeffs.shape[0])], axis=0)  # (deg+1, n)
+        # (deg+1, n) x (deg+1, lat, lon) -> (n, lat, lon)
+        return np.einsum("kn,klm->nlm", powers, self.coeffs)
+
+
+def fit_poly_trend(train_weekly, degree: int = 2, dim: str = "time") -> "PolyTrend":
+    """Least-squares per-gridpoint polynomial trend of TRAIN weekly anomalies vs
+    centred decimal year. degree=1 matches fit_linear_trend."""
+    import numpy as np
+    x = _decimal_year(train_weekly[dim].values)
+    x_mean = x.mean()
+    xc = x - x_mean
+    V = np.vander(xc, degree + 1, increasing=True)         # (T, degree+1)
+    y = train_weekly.transpose(dim, "latitude", "longitude").values  # (T, lat, lon)
+    T, H, W = y.shape
+    coeffs, *_ = np.linalg.lstsq(V, y.reshape(T, H * W), rcond=None)  # (degree+1, H*W)
+    return PolyTrend(coeffs.reshape(degree + 1, H, W), x_mean,
+                     train_weekly["latitude"], train_weekly["longitude"])
+
+
+def climatology_woy_polytrend_ensemble(
+    train_weekly, target_woy: int, target_time, window: int = 3,
+    member_dim: str = "member", poly: "PolyTrend | None" = None, degree: int = 2,
+):
+    """Like climatology_woy_trend_ensemble but with a degree>=1 polynomial trend.
+
+    Each pooled member is shifted by poly(target_time) - poly(member_source_date).
+    degree=1 reproduces the linear trend-aware reference (asserted in tests).
+    """
+    import numpy as np
+    pool = climatology_woy_ensemble(train_weekly, target_woy, window=window, member_dim=member_dim)
+    if poly is None:
+        poly = fit_poly_trend(train_weekly, degree=degree)
+    val_target = poly.evaluate(np.atleast_1d(np.asarray(target_time, dtype="datetime64[ns]")))[0]  # (lat,lon)
+    val_member = poly.evaluate(pool[member_dim].values)                                             # (M,lat,lon)
+    shift = xr.DataArray(
+        val_target[None, :, :] - val_member,
+        dims=(member_dim, "latitude", "longitude"),
+        coords={member_dim: pool[member_dim], "latitude": pool["latitude"], "longitude": pool["longitude"]},
+    )
+    return pool + shift
