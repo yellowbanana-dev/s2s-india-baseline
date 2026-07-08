@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from einops import rearrange
+from einops import rearrange, repeat
 
 # Locked for the whole project (configs/data/era5_india.yaml: resolution_deg=5.625).
 _GRID = (32, 64)
@@ -59,11 +59,12 @@ class PatchViT(nn.Module):
     Dropout (cfg.model.drop_rate) is reused by the MC-dropout arm of the P2 ensemble.
     """
 
-    def __init__(self, in_channels: int, out_channels: int, lead: int, cfg):
+    def __init__(self, in_channels: int, out_channels: int, lead: int, cfg, seed: int = 42):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.lead = lead
+        self.seed = int(seed)
 
         patch_size = int(cfg.patch_size)
         embed_dim = int(cfg.embed_dim)
@@ -90,34 +91,73 @@ class PatchViT(nn.Module):
         self.norm = nn.LayerNorm(embed_dim)
         self.head = nn.Linear(embed_dim, lead * out_channels * patch_size * patch_size)
 
+        # Stochastic member mechanism (Fix 6/C3): FiLM-condition the patch tokens on
+        # a noise vector drawn per (sample, member). Comparable cheapness to Mosaic's
+        # cSwiGLU noise (one Linear). Gated on noise_dim>0 so the deterministic
+        # patch-ViT (default configs) is byte-for-byte unchanged. Zero-init => members
+        # start identical and spread emerges under fair-CRPS training.
+        self.noise_dim = int(getattr(cfg, 'noise_dim', 0))
+        self._noise_gen = None
+        if self.noise_dim > 0:
+            self.to_film = nn.Linear(self.noise_dim, 2 * embed_dim)
+            nn.init.zeros_(self.to_film.weight)
+            nn.init.zeros_(self.to_film.bias)
+
+    def _draw_noise(self, n: int, device, dtype) -> torch.Tensor:
+        """n noise vectors from a seeded generator (reproducible members)."""
+        if self._noise_gen is None:
+            self._noise_gen = torch.Generator(device=device)
+            self._noise_gen.manual_seed(self.seed)
+        return torch.randn((n, self.noise_dim), generator=self._noise_gen,
+                           device=device, dtype=dtype)
+
     def forward(self, x: torch.Tensor, num_noise_samples: int = 1) -> torch.Tensor:
-        """Deterministic backbone. Accepts num_noise_samples for a uniform interface
-        with MosaicBackbone; PatchViT has no stochastic mechanism, so M>1 tiles the
-        single deterministic prediction into M identical members (zero spread, which
-        the calibration metrics will correctly report as under-dispersed)."""
+        """num_noise_samples == 1 (default): deterministic (B, lead, C, lat, lon).
+        num_noise_samples == M > 1:
+          - noise_dim > 0 (Fix 6/C3): FiLM-inject a per-(sample, member) noise vector
+            at the patch embedding, yielding M DISTINCT members -> (B, M, lead, C, lat, lon).
+          - noise_dim == 0 (legacy): tile the single deterministic prediction into M
+            identical members (zero spread; calibration metrics report under-dispersion)."""
         b, c, h, w = x.shape
         if c != self.in_channels:
             raise ValueError(f"expected {self.in_channels} input channels, got {c}")
         if (h, w) != _GRID:
             raise ValueError(f"expected grid {_GRID}, got {(h, w)}")
+        M = int(num_noise_samples)
+        n_h, n_w = h // self.patch_size, w // self.patch_size
 
         tokens = self.patch_embed(x)  # (B, embed_dim, n_h, n_w)
         tokens = rearrange(tokens, "b e nh nw -> b (nh nw) e")
         tokens = self.drop(tokens + self.pos_embed)
 
+        if self.noise_dim > 0 and M > 1:
+            # Stochastic ensemble: replicate tokens per member and FiLM-condition on noise.
+            tokens = repeat(tokens, "b n e -> (b m) n e", m=M)
+            z = self._draw_noise(b * M, x.device, x.dtype)          # (B*M, noise_dim)
+            gamma, beta = self.to_film(z).chunk(2, dim=-1)          # each (B*M, embed_dim)
+            tokens = (1.0 + gamma).unsqueeze(1) * tokens + beta.unsqueeze(1)
+            for block in self.blocks:
+                tokens = block(tokens)
+            tokens = self.norm(tokens)
+            out = self.head(tokens)                                 # (B*M, N, lead*C*p*p)
+            return rearrange(
+                out,
+                "(b m) (nh nw) (lead c ph pw) -> b m lead c (nh ph) (nw pw)",
+                b=b, m=M, nh=n_h, nw=n_w, lead=self.lead, c=self.out_channels,
+                ph=self.patch_size, pw=self.patch_size,
+            )
+
+        # Deterministic path (unchanged).
         for block in self.blocks:
             tokens = block(tokens)
         tokens = self.norm(tokens)
-
         out = self.head(tokens)  # (B, N, lead * out_channels * p * p)
-        n_h, n_w = h // self.patch_size, w // self.patch_size
         out = rearrange(
             out,
             "b (nh nw) (lead c ph pw) -> b lead c (nh ph) (nw pw)",
             nh=n_h, nw=n_w, lead=self.lead, c=self.out_channels,
             ph=self.patch_size, pw=self.patch_size,
         )
-        if int(num_noise_samples) > 1:
-            # (B, lead, C, lat, lon) -> (B, M, lead, C, lat, lon), identical members.
-            out = out.unsqueeze(1).expand(-1, int(num_noise_samples), -1, -1, -1, -1).contiguous()
+        if M > 1:
+            out = out.unsqueeze(1).expand(-1, M, -1, -1, -1, -1).contiguous()
         return out

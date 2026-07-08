@@ -55,7 +55,7 @@ def _build_backbone(in_channels, out_channels, lead, cfg, latitude, longitude):
     if name == "mosaic":
         from s2s.models.mosaic_backbone import MosaicBackbone
         return MosaicBackbone(in_channels, out_channels, lead, cfg.model, latitude, longitude)
-    return PatchViT(in_channels, out_channels, lead, cfg.model)
+    return PatchViT(in_channels, out_channels, lead, cfg.model, seed=int(getattr(cfg, "seed", 42)))
 
 
 class S2SLitModule(L.LightningModule):

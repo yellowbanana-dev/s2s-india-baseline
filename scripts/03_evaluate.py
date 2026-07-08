@@ -187,7 +187,11 @@ def main(cfg: DictConfig) -> None:
     # "auto" picks internal for Mosaic, p2 otherwise.
     member_source = str(cfg.eval.get("member_source", "auto"))
     if member_source == "auto":
-        member_source = "internal" if str(getattr(cfg.model, "name", "")) == "mosaic" else "p2"
+        # internal = draw members from the model's own noise mechanism.
+        # Mosaic always has one; patch-ViT has one only when noise_dim>0 (Fix 6/C3).
+        _name = str(getattr(cfg.model, "name", ""))
+        _has_noise = int(getattr(cfg.model, "noise_dim", 0)) > 0
+        member_source = "internal" if (_name == "mosaic" or _has_noise) else "p2"
 
     if member_source == "internal":
         n_members = int(cfg.eval.get("members", getattr(cfg.train, "eval_members", 16)))
