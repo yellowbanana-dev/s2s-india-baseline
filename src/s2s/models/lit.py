@@ -54,7 +54,10 @@ def _build_backbone(in_channels, out_channels, lead, cfg, latitude, longitude):
     name = str(getattr(cfg.model, "name", "patch_vit"))
     if name == "mosaic":
         from s2s.models.mosaic_backbone import MosaicBackbone
-        return MosaicBackbone(in_channels, out_channels, lead, cfg.model, latitude, longitude)
+        return MosaicBackbone(
+            in_channels, out_channels, lead, cfg.model, latitude, longitude,
+            seed=int(getattr(cfg, "seed", 42)),
+        )
     return PatchViT(in_channels, out_channels, lead, cfg.model, seed=int(getattr(cfg, "seed", 42)))
 
 
