@@ -268,11 +268,13 @@ def test_rope_enabled_forward():
 # 7. Native time embedding: non-zero doy_cos input → non-zero day_year_time
 # ---------------------------------------------------------------------------
 
-def test_time_embedding_nonzero():
-    """Non-zero doy_cos in x[:, -1] produces a non-zero day_year_time signal.
+def test_time_embedding_true_phase_from_cos_sin():
+    """The adapter recovers the TRUE day phase from the (doy_cos, doy_sin) pair via
+    atan2 (Fix 5b/M5), not the arccos fold. doy_cos is x[:, -2], doy_sin is x[:, -1].
 
-    Verifies Stage-A fix 3: the adapter derives day_normalized via arccos(doy_cos)
-    and injects it into the Transformer time embedding instead of passing zeros.
+    Unlike arccos (which maps spring and autumn to the same [0,0.5] value), atan2
+    distinguishes the full year in [0,1): a doy in the SECOND half (sin<0) lands in
+    (0.5, 1), which arccos could never produce.
     """
     from s2s.models.mosaic_backbone import MosaicBackbone
     import math
@@ -281,15 +283,6 @@ def test_time_embedding_nonzero():
     model = MosaicBackbone(13, 2, 6, cfg, _LAT, _LON)
     model.eval()
 
-    # Midsummer: doy_cos = cos(2π * 182/365.25) ≈ cos(π) ≈ -1
-    # arccos(-1)/2π = 0.5 → day_year_time[:, 0, 0] = 0.5
-    # Midwinter: doy=0 → doy_cos=1 → day_normalized=0
-    doy_cos_summer = torch.tensor(-0.99, dtype=torch.float32)
-    doy_cos_winter = torch.tensor(1.00, dtype=torch.float32)
-    expected_day_summer = math.acos(-0.99) / (2 * math.pi)
-    expected_day_winter = 0.0
-
-    # Capture day_year_time passed to self.transformer by patching forward
     captured = {}
     _real_fwd = model.transformer.forward
 
@@ -299,26 +292,23 @@ def test_time_embedding_nonzero():
 
     model.transformer.forward = _patched_fwd
 
-    x_summer = torch.randn(1, 13, 32, 64)
-    x_summer[:, -1] = doy_cos_summer   # uniform doy_cos channel
+    def _day_norm_for(doy):
+        ang = 2 * math.pi * doy / 365.25
+        x = torch.randn(1, 13, 32, 64)
+        x[:, -2] = math.cos(ang)   # doy_cos channel
+        x[:, -1] = math.sin(ang)   # doy_sin channel
+        with torch.no_grad():
+            model(x)
+        return captured["day_year_time"][0, 0, 0].item()
 
-    with torch.no_grad():
-        model(x_summer)
+    # Autumn (doy≈273, sin<0) MUST land in the second half — impossible under arccos.
+    autumn = _day_norm_for(273)
+    assert 0.5 < autumn < 1.0, f"autumn day_normalized {autumn:.4f} not in (0.5,1)"
+    assert abs(autumn - (2 * math.pi * 273 / 365.25) / (2 * math.pi)) < 1e-3
 
-    day_got = captured["day_year_time"][0, 0, 0].item()
-    assert abs(day_got - expected_day_summer) < 1e-4, (
-        f"Expected day_normalized ≈ {expected_day_summer:.4f}, got {day_got:.4f}"
-    )
-
-    # Sanity: winter doy_cos=1 → day_normalized=0
-    x_winter = torch.randn(1, 13, 32, 64)
-    x_winter[:, -1] = doy_cos_winter
-    with torch.no_grad():
-        model(x_winter)
-    day_got_w = captured["day_year_time"][0, 0, 0].item()
-    assert abs(day_got_w - expected_day_winter) < 1e-4, (
-        f"Expected day_normalized=0 for winter, got {day_got_w:.4f}"
-    )
+    # Spring (doy≈91) lands near 0.25; winter (doy≈1) near 0.
+    assert abs(_day_norm_for(91) - 0.25) < 5e-3
+    assert _day_norm_for(1) < 0.02
 
 
 import numpy as _np

@@ -16,7 +16,8 @@ scores over the India box on the TEST split:
   * reliability diagrams for P(t2m anom>0), P(precip anom>0), and the India-context
     absolute WEEKLY-MEAN events P(t2m>40 C) and P(precip>50 mm/day) -- the absolute
     ones scored on RECONSTRUCTED weekly-mean physical fields (train clim added back;
-    precip un-log1p'd). These are weekly-mean exceedances, NOT daily extremes.
+    precip un-log1p'd to mm/day; see Jensen-bias note in _reconstruct_physical).
+    These are weekly-mean exceedances, NOT daily extremes.
 
 Outputs (eval.results_dir): metrics.csv, rank_hist_<var>_wk<k>.png,
 reliability_<event>.png. Decision gate: CRPSS > eval.gate.threshold at the gate
@@ -127,7 +128,15 @@ def _reconstruct_physical(anom_phys, clim_doy, var, target_times):
     anom_phys: (..., n_samples, lat, lon) with sample as the SECOND-LAST-but-one
     axis is awkward; here we accept (n, lat, lon) or (m, n, lat, lon) and broadcast
     the per-sample climatology over the leading member axis if present. Precip is
-    un-log1p'd after adding the climatology back (clim lives in log1p space).
+    un-log1p'd after adding the climatology back (clim lives in log1p space); the
+    result is mm/day (Fix 4/M2).
+
+    JENSEN BIAS (Fix 4/M2): this reconstruction is expm1(weekly_mean(log1p(daily))),
+    but the physical weekly mean is weekly_mean(expm1(log1p(daily))). Since expm1 is
+    convex, expm1(mean(.)) <= mean(expm1(.)), so reconstructed weekly-mean precip is
+    biased LOW. It affects ONLY the physical-threshold reliability diagrams (a
+    secondary diagnostic); the headline CRPS/CRPSS are scored in transformed-anomaly
+    space and are unaffected. A future fix reconstructs in daily space then averages.
     """
     doy = pd.DatetimeIndex(target_times).dayofyear.values
     # climatology.zarr stores (dayofyear, longitude, latitude); transpose to
@@ -495,7 +504,8 @@ def main(cfg: DictConfig) -> None:
         fig.tight_layout(); fig.savefig(results_dir / f"reliability_{name}.png", dpi=120)
         plt.close(fig)
 
-    print("\n=== Honest eval -- India box, test split, PHYSICAL units ===\n")
+    print("\n=== Honest eval -- India box, test split "
+          "(t2m: Kelvin anomaly; precip: log1p(mm/day) transformed anomaly) ===\n")
     _ci_cols = ["crps_model", "crpss_vs_prob", "crpss_vs_trend", "crpss_vs_trend_ci_lo",
                 "crpss_vs_trend_ci_hi", "crpss_vs_trend2", "spread_error_ratio"]
     for var in out_vars:
