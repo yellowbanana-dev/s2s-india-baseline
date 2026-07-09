@@ -55,10 +55,20 @@ ensemble drawn from its own noise mechanism, and evaluate on calibrated-spread m
 ## Safeguard
 
 Before trusting Stage-B India-box numbers, `scripts/healpix_recon_check.py` measures the
-identity-reconstruction error of the lon/lat <-> HEALPix round-trip, globally and over
-the India box. A large India-box error would mean the mesh mapping distorts our eval
-region (a candidate explanation for the residual mean-ACC gap) and would compromise the
-regional CRPS — to be ruled out, not assumed.
+reconstruction error of the lon/lat <-> HEALPix round-trip, globally and over the India
+box. A large India-box error would mean the mesh mapping distorts our eval region (a
+candidate explanation for the residual mean-ACC gap) and would compromise the regional
+CRPS — to be ruled out, not assumed.
+
+**Correction (Fix 7/M1).** The interpolators (`CrossAttentionInterpolate`) are LEARNED,
+not a fixed geometric operation, so the round-trip is weight-dependent. The earlier
+figure quoted from an *untrained* run (~0.3 relative RMSE) was an artifact of random
+initialisation gain, not interpolation loss, and is **retracted**. The diagnostic now
+(a) removes the best least-squares gain/bias per region before computing RMSE, so the
+residual reflects spatial distortion rather than an arbitrary scale, and (b) accepts
+`eval.checkpoint=<path>` to load the trained interpolator weights and measure the
+*trained* round-trip — the only version that bears on a trained model's regional skill.
+The safeguard should be read off the gain/bias-corrected, trained-weights number.
 
 ## Consequences
 
