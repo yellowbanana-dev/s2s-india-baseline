@@ -73,6 +73,17 @@ def attn_topk(q: torch.Tensor, k: torch.Tensor, block_count: int):
     return top_indices
 
 
+def _sdpa_cross(q, k, v):
+    """Scaled dot-product attention, q attending to a (smaller) k/v set.
+
+    Flash layout in/out: (b, s, h, d). Assumes q and k/v share head count
+    (gqa_ratio=1); memory-efficient (SDPA / flash never materialises the score matrix).
+    """
+    q_, k_, v_ = [rearrange(t, 'b s h d -> b h s d') for t in (q, k, v)]
+    o = F.scaled_dot_product_attention(q_, k_, v_)
+    return rearrange(o, 'b h s d -> b s h d')
+
+
 def mosaic_attn_func(
     q, k, v,
     weight_ba_cmp_slc,
@@ -84,12 +95,31 @@ def mosaic_attn_func(
     if block_attn_only:
         return o_ba
 
-    # LOCAL MODIFICATION: ops.py (Triton sparse kernel) is not vendored.
-    # This branch is never reached when sparse_every <= 0 (our permanent setting).
-    raise ImportError(
-        "mosaic_sparse_attn (ops.py) is not vendored. "
-        "Set cfg.model.sparse_every <= 0 to keep all blocks in block_attn_only mode."
-    )
+    # LOCAL MODIFICATION (lever f / ADR-0007): PyTorch reference for the block-sparse
+    # path, replacing the upstream Triton ops.py (never vendored). At high resolution
+    # (nside=64 -> ~49k tokens) dense global attention is infeasible, so each query gets
+    # cheap GLOBAL context from a COMPRESSED key/value set (block-mean-pool over
+    # sparse_block_size), combined with the LOCAL block branch by the learned 3-way
+    # strategy gate (weight_ba_cmp_slc).
+    #
+    # The fine top-k SELECTION branch (per-query gather of selected blocks' fine tokens)
+    # is memory-infeasible in pure PyTorch at this scale -- that per-query gather is
+    # exactly what the Triton kernel exists for -- so it is DEFERRED to the vendored
+    # kernel (Option 1, pursued only if f1 shows promise). Until then the selection slot
+    # reuses the compressed result, so the gate still trains over 3 slots and dropping in
+    # the real kernel later only sharpens the selection branch. (sparse_block_count and
+    # attn_topk are unused here; they belong to that future kernel.)
+    if q.shape[1] % sparse_block_size != 0:
+        raise ValueError(
+            f"seq_len {q.shape[1]} not divisible by sparse_block_size {sparse_block_size}"
+        )
+    kc = reduce(k, 'b (nb bs) h d -> b nb h d', 'mean', bs=sparse_block_size)
+    vc = reduce(v, 'b (nb bs) h d -> b nb h d', 'mean', bs=sparse_block_size)
+    o_cmp = _sdpa_cross(q, kc, vc)
+    o_slc = o_cmp  # placeholder for the fine top-k selection branch (Triton kernel)
+
+    w = weight_ba_cmp_slc  # (3, b, s, h, 1)
+    return w[0] * o_ba + w[1] * o_cmp + w[2] * o_slc
 
 
 class cSwiGLU(nn.Module):
