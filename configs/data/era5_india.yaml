@@ -40,7 +40,7 @@ history_weeks: 2               # weeks of past state fed as input
 # SST teleconnection indices (Phase-C lever b): low-dim ENSO/IOD boundary signal as
 # globally-broadcast channels, from the train-standardized SST anomaly field.
 #   nino34 = ENSO (Nino 3.4);  dmi = IOD Dipole Mode Index (West minus East)
-sst_indices: [nino34, dmi]
+sst_indices: []   # ADR-0006: SST indices = null lever (no CI-distinguishable gain), OFF by default
 sst_index_lags_weeks: [0]   # init-time; extend (e.g. [0, 8]) for index tendency
 
 # Splits by year block. Stats (climatology, norm) come from TRAIN ONLY.
