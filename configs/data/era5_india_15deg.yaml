@@ -1,0 +1,55 @@
+# Stage 1 + 2 data configuration -- 1.5 deg (lever f / ADR-0007).
+# Scale-up of era5_india.yaml. Differences from the 5.625 deg config are the
+# resolution, WB2 store, processed path (separate, so the 5.625 deg canonical is
+# never clobbered), and the with-poles grid (240 x 121, incl. +/-90).
+source: weatherbench2
+resolution_deg: 1.5            # global grid = 121 lat x 240 lon (WITH poles)
+
+# WeatherBench2 ERA5, 1.5 deg = 240x121 (with poles), 6-hourly, 1959-2023 -- WB2's
+# own standard evaluation grid.
+# VERIFY the exact store name on-cluster before the pull:
+#   gsutil ls gs://weatherbench2/datasets/era5/ | grep 240x121
+zarr_path: "gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-240x121_equiangular_with_poles_conservative.zarr"
+
+variables:
+  targets:
+    surface:
+      - 2m_temperature                  # Kelvin
+      - total_precipitation_24hr        # accumulated metres/24h (NOT a rate)
+  predictors:
+    surface:
+      - sea_surface_temperature                 # ocean memory (NaN over land)
+    levels:                             # variable -> pressure levels (hPa)
+      geopotential: [500]
+      u_component_of_wind: [850, 200]   # MJO / monsoon wind fingerprint
+
+# Optional: restrict years during development for fast first runs (null = all).
+# DRY RUN (ADR-0007): override on the CLI, e.g.
+#   data.dev_years=[2008,2018] data.splits.train=[2008,2014] data.splits.val=[2015,2016] data.splits.test=[2017,2018]
+dev_years: null
+
+# Input domain is GLOBAL (do not crop -- teleconnections). Eval is the India box.
+input_domain: global
+eval_box:                      # lat/lon bounds for scoring only (India, far from poles)
+  lat_min: 5.0
+  lat_max: 40.0
+  lon_min: 65.0
+  lon_max: 100.0
+
+# Temporal: weekly means, direct prediction of weeks 1-6.
+lead_weeks: [1, 2, 3, 4, 5, 6]
+history_weeks: 2               # weeks of past state fed as input
+
+# Splits by year block. Stats (climatology, norm) come from TRAIN ONLY.
+splits:
+  train: [1979, 2012]
+  val:   [2013, 2017]
+  test:  [2018, 2023]
+  embargo_weeks: 4             # gap between blocks to kill autocorrelation leakage
+
+train_stride_days: 1
+precip_transform: log1p        # M2: applied to mm/day downstream (see climatology.py)
+
+paths:
+  raw: /Datastorage/scdlds_bharat/s2s/data/raw_15deg
+  processed: /Datastorage/scdlds_bharat/s2s/data/processed_15deg

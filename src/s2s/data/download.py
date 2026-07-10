@@ -64,10 +64,23 @@ def verify_pull(ds: xr.Dataset, cfg) -> None:
     This is the human-owned gate: read the printed summary and the plotted field
     before trusting the data.
     """
-    # --- grid shape: 64 lon x 32 lat, poles excluded ---
-    assert ds.sizes.get("longitude") == 64, f"longitude != 64: {ds.sizes}"
-    assert ds.sizes.get("latitude") == 32, f"latitude != 32: {ds.sizes}"
-    assert abs(float(ds.latitude.max())) < 90, "grid should NOT include the poles"
+    # --- grid shape: resolution-aware (lever f / ADR-0007). Equiangular grids are
+    # either 'no poles' (180/res lats, e.g. 5.625deg -> 32) or 'with poles'
+    # (180/res + 1 lats, e.g. 1.5deg -> 121, incl. +/-90). ---
+    res = float(cfg.data.resolution_deg)
+    nlon = int(round(360.0 / res))
+    nlat = int(ds.sizes.get("latitude"))
+    nlat_np = int(round(180.0 / res))
+    nlat_wp = nlat_np + 1
+    assert ds.sizes.get("longitude") == nlon, f"longitude != {nlon} for {res} deg: {ds.sizes}"
+    assert nlat in (nlat_np, nlat_wp), (
+        f"latitude {nlat} != {nlat_np} (no-poles) or {nlat_wp} (with-poles) for {res} deg"
+    )
+    lat_max = abs(float(ds.latitude.max()))
+    if nlat == nlat_wp:
+        assert lat_max > 89.0, f"with-poles grid ({nlat} lats) must include +/-90; max|lat|={lat_max}"
+    else:
+        assert lat_max < 90.0, f"no-poles grid ({nlat} lats) must exclude poles; max|lat|={lat_max}"
 
     # --- continuous 6-hourly time axis, no gaps ---
     dt_h = np.diff(ds.time.values).astype("timedelta64[h]").astype(int)

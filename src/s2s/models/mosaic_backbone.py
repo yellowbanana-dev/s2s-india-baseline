@@ -43,7 +43,8 @@ from s2s.models.mosaic.mosaic import (
     Transformer, ModelConfig, StageConfig, BottleneckConfig,
 )
 
-_GRID = (32, 64)  # (lat, lon) locked to 5.625 deg equiangular
+# Grid (lat, lon) is derived from the datamodule's coordinates, not hardcoded, so the
+# adapter is resolution-agnostic (5.625 deg 32x64 ... 1.5 deg 121x240; lever f / ADR-0007).
 
 
 class MosaicBackbone(nn.Module):
@@ -63,8 +64,8 @@ class MosaicBackbone(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.lead = lead
-        self._lat = _GRID[0]
-        self._lon = _GRID[1]
+        self._lat = int(len(latitude))
+        self._lon = int(len(longitude))
 
         mc = cfg   # OmegaConf DictConfig from configs/model/mosaic.yaml
 
@@ -157,8 +158,8 @@ class MosaicBackbone(nn.Module):
         b, c, lat, lon = x.shape
         if c != self.in_channels:
             raise ValueError(f"expected {self.in_channels} input channels, got {c}")
-        if (lat, lon) != _GRID:
-            raise ValueError(f"expected grid {_GRID}, got {(lat, lon)}")
+        if (lat, lon) != (self._lat, self._lon):
+            raise ValueError(f"expected grid {(self._lat, self._lon)}, got {(lat, lon)}")
         M = int(num_noise_samples)
 
         # Extract day_normalized BEFORE permuting x. The last TWO input channels are
@@ -179,7 +180,7 @@ class MosaicBackbone(nn.Module):
         x = x.permute(0, 2, 1, 3)          # (B, lon, lat, C_in)
         x = x.unsqueeze(1).unsqueeze(2)    # (B, 1, 1, lon, lat, C_in)
 
-        # Step 3: Mosaic forward (n=1, t=1). Output: (B, M, lon=64, lat=32, lead*C_out).
+        # Step 3: Mosaic forward (n=1, t=1). Output: (B, M, lon, lat, lead*C_out).
         out = self.transformer(x, day_year_time, num_noise_samples=M)
 
         # Steps 4-8: reshape to (B, M, lead, C_out, lat, lon).
