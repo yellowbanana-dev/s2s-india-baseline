@@ -90,6 +90,10 @@ def mosaic_attn_func(
     block_attn_size, sparse_block_size, sparse_block_count,
     block_attn_only, no_compression=False,
 ):
+    if q.shape[1] % block_attn_size != 0:
+        raise ValueError(
+            f"seq_len {q.shape[1]} not divisible by block_attn_size {block_attn_size}"
+        )
     o_ba = block_attention(q, k, v, block_attn_size)
 
     if block_attn_only:

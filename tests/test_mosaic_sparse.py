@@ -50,7 +50,17 @@ def test_strategy_gate_is_convex_combination():
 
 
 def test_sparse_requires_divisible_seq():
-    attn = MosaicAttention(_cfg(sparse_block_size=8), block_attn_only=False).eval()
-    x = torch.randn(60, 1, 32)  # 60 not divisible by 8
+    # block_attn_size (48) divides seq (48) so block_attention passes; sparse_block_size
+    # (32) does NOT divide 48 -> the sparse guard must raise a clean ValueError.
+    attn = MosaicAttention(_cfg(block_attn_size=48, sparse_block_size=32), block_attn_only=False).eval()
+    x = torch.randn(48, 1, 32)
+    with pytest.raises(ValueError):
+        attn(x)
+
+
+def test_block_attn_size_divisibility_guard():
+    # seq (50) not divisible by block_attn_size (16) -> clean ValueError, not raw einops.
+    attn = MosaicAttention(_cfg(block_attn_size=16), block_attn_only=False).eval()
+    x = torch.randn(50, 1, 32)
     with pytest.raises(ValueError):
         attn(x)
