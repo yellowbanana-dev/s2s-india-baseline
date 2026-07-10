@@ -81,11 +81,17 @@ def daily_init_weekly_windows(
       targets (N, n_lead_weeks, n_out_vars, lat, lon)   float32
       time    (N,) datetime64  -- init dates
     """
-    from s2s.data.assemble import input_vars, pack_windows, target_vars
+    from s2s.data.assemble import (
+        compute_sst_index_series, input_vars, pack_windows,
+        sst_index_block, sst_index_names, sst_index_lags, target_vars,
+    )
 
     history_weeks = int(cfg.data.history_weeks)
     lead_weeks = list(cfg.data.lead_weeks)
     max_lead = max(lead_weeks)
+    idx_names = sst_index_names(cfg)
+    idx_lags = sst_index_lags(cfg)
+    max_idx_lag = max(idx_lags) if idx_names else 0
     in_vars = input_vars(cfg)
     out_vars = target_vars(cfg)
 
@@ -116,7 +122,7 @@ def daily_init_weekly_windows(
     # Latest lead window: rolled index t + 7*max_lead (ends at t+7*max_lead; Fix 5a).
     #   Needs to be < n_time.
     #   => t <= n_time - 7*max_lead - 1
-    t_min = 7 * (history_weeks - 1) + 6
+    t_min = 7 * max(history_weeks - 1, max_idx_lag) + 6  # deepest lookback: history or SST-index lag
     t_max = n_time - 7 * max_lead - 1
 
     n_in_vars = len(in_vars)
@@ -126,7 +132,7 @@ def daily_init_weekly_windows(
     if t_max < t_min:
         # Split too short to produce any sample (e.g. tiny dev subset).
         return {
-            "inputs": np.empty((0, history_weeks * n_in_vars + 2, lat, lon), dtype=np.float32),
+            "inputs": np.empty((0, history_weeks * n_in_vars + len(idx_names) * len(idx_lags) + 2, lat, lon), dtype=np.float32),
             "targets": np.empty((0, n_leads, n_out_vars, lat, lon), dtype=np.float32),
             "time": np.array([], dtype="datetime64[ns]"),
         }
@@ -135,10 +141,10 @@ def daily_init_weekly_windows(
 
     # ---- LEAKAGE ASSERTIONS -------------------------------------------
     # oldest history index for first valid sample
-    oldest_idx = int(valid_idx[0]) - 7 * (history_weeks - 1)
+    oldest_idx = int(valid_idx[0]) - 7 * max(history_weeks - 1, max_idx_lag)
     assert oldest_idx >= 6, (
-        f"daily_init_weekly_windows: oldest history rolled index={oldest_idx} < 6 "
-        f"(rolling mean would be NaN -- split boundary or embargo misconfigured)"
+        f"daily_init_weekly_windows: oldest lookback rolled index={oldest_idx} < 6 "
+        f"(rolling mean would be NaN -- split boundary, embargo, or SST-index lag misconfigured)"
     )
     # latest lead index for last valid sample
     latest_idx = int(valid_idx[-1]) + 7 * max_lead
@@ -161,5 +167,12 @@ def daily_init_weekly_windows(
     lead_idx = valid_idx[:, None] + lead_offsets[None, :]                    # (N, n_leads)
     out_leads = out_stack[:, lead_idx, :, :].transpose(1, 2, 0, 3, 4).astype(np.float32)
 
-    inputs, targets = pack_windows(in_hist, out_leads, doy_cos[valid_idx], doy_sin[valid_idx])
+    extra = None
+    if idx_names:
+        idx_series = compute_sst_index_series(rolled, cfg)   # rolled = 7-day-mean SST
+        extra = sst_index_block(idx_series, valid_idx, idx_lags, 7, lat, lon)
+
+    inputs, targets = pack_windows(
+        in_hist, out_leads, doy_cos[valid_idx], doy_sin[valid_idx], extra
+    )
     return {"inputs": inputs, "targets": targets, "time": np.array(times[valid_idx])}

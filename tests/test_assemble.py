@@ -118,3 +118,44 @@ def test_train_lead_window_ends_at_t_plus_7L():
         old_window = t2m[end:end + 7].mean(axis=0)             # the old (misaligned) window
         assert not np.allclose(out["targets"][0, li, 0], old_window, atol=1e-3)
     assert out["inputs"].shape[1] == 6 * 2 + 2                 # 12 history + doy_cos + doy_sin
+
+
+def test_sst_indices_add_channels_and_track_enso():
+    """Phase-C lever b: sst_indices add low-dim broadcast channels between the history
+    stack and the seasonal pair; nino34 tracks the Nino 3.4 SST box (32x64 grid)."""
+    from s2s.data.assemble import input_vars, sst_index_names, n_sst_index_channels
+
+    cfg = _make_cfg(history_weeks=2, lead_weeks=(1, 2, 3))
+    cfg.data.sst_indices = ["nino34", "dmi"]
+    cfg.data.sst_index_lags_weeks = [0]
+    assert sst_index_names(cfg) == ["nino34", "dmi"]
+    assert n_sst_index_channels(cfg) == 2
+
+    n_in = len(input_vars(cfg))
+    in_channels, _ = in_out_channels(cfg)
+    assert in_channels == n_in * 2 + 2 + 2   # history + 2 indices + (cos, sin)
+
+    lat = -90 + 5.625 / 2 + np.arange(32) * 5.625
+    lon = np.arange(64) * 5.625
+
+    def _weekly(nino_warm):
+        rng = np.random.default_rng(0)
+        t = pd.date_range("2010-01-04", periods=20, freq="7D")
+        sh = (20, 32, 64)
+        dv = {k: (("time", "latitude", "longitude"), rng.normal(size=sh).astype(np.float32))
+              for k in ["2m_temperature", "total_precipitation_24hr", "sea_surface_temperature",
+                        "geopotential_500", "u_component_of_wind_850", "u_component_of_wind_200"]}
+        ds = xr.Dataset(dv, coords={"time": t, "latitude": lat, "longitude": lon})
+        if nino_warm:
+            m = (lat >= -5) & (lat <= 5); nn = (lon >= 190) & (lon <= 240)
+            ds["sea_surface_temperature"].loc[dict(latitude=lat[m], longitude=lon[nn])] += nino_warm
+        return ds
+
+    warm = assemble_arrays(_weekly(2.0), cfg)
+    neut = assemble_arrays(_weekly(0.0), cfg)
+    assert warm["inputs"].shape[1] == in_channels
+    assert np.isfinite(warm["inputs"]).all()
+    body = n_in * 2  # index channels sit right after the history stack
+    assert warm["inputs"][:, body, 0, 0].mean() > neut["inputs"][:, body, 0, 0].mean() + 1.0
+    assert np.allclose(warm["inputs"][0, body], warm["inputs"][0, body, 0, 0])  # spatially uniform
+    assert not np.allclose(warm["inputs"][:, -2, 0, 0], warm["inputs"][:, -1, 0, 0])  # cos != sin (pair last)

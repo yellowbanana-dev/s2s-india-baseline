@@ -36,10 +36,77 @@ def input_vars(cfg) -> list[str]:
     return target_vars(cfg) + predictor_vars(cfg)
 
 
+# --- SST teleconnection indices (Phase-C lever b) -------------------------------
+# Low-dim ENSO/IOD boundary signal as globally-broadcast channels, computed from the
+# train-standardized SST anomaly field (leakage-safe; monotone proxy for the
+# conventional raw-anomaly indices). Boxes are (lat_min, lat_max, lon_min, lon_max,
+# sign); lon in 0-360.
+_SST_VAR = "sea_surface_temperature"
+_SST_INDEX_BOXES = {
+    "nino34": [(-5.0, 5.0, 190.0, 240.0, 1.0)],                       # ENSO, Nino 3.4
+    "dmi": [(-10.0, 10.0, 50.0, 70.0, 1.0), (-10.0, 0.0, 90.0, 110.0, -1.0)],  # IOD DMI = W - E
+}
+
+
+def sst_index_names(cfg) -> list[str]:
+    names = list(getattr(cfg.data, "sst_indices", None) or [])
+    if not names or _SST_VAR not in list(cfg.data.variables.predictors.surface or []):
+        return []
+    return [n for n in names if n in _SST_INDEX_BOXES]
+
+
+def sst_index_lags(cfg) -> list[int]:
+    return [int(l) for l in (getattr(cfg.data, "sst_index_lags_weeks", None) or [0])]
+
+
+def n_sst_index_channels(cfg) -> int:
+    return len(sst_index_names(cfg)) * len(sst_index_lags(cfg))
+
+
+def _box_mean(sst_da, lat_min, lat_max, lon_min, lon_max):
+    """cos(lat)-weighted mean of an SST DataArray over a lat/lon box (skips land NaN)."""
+    lat = sst_da["latitude"]
+    lon = sst_da["longitude"]
+    mask = (
+        (lat >= min(lat_min, lat_max)) & (lat <= max(lat_min, lat_max))
+        & (lon >= lon_min) & (lon <= lon_max)
+    )
+    return sst_da.where(mask).weighted(np.cos(np.deg2rad(lat))).mean(
+        ("latitude", "longitude"), skipna=True
+    )
+
+
+def compute_sst_index_series(ds, cfg) -> np.ndarray:
+    """(n_index_names, T) signed area-weighted SST-index time series over `ds`."""
+    names = sst_index_names(cfg)
+    if not names:
+        return np.zeros((0, ds.sizes["time"]), dtype=np.float32)
+    sst = ds[_SST_VAR]
+    series = []
+    for name in names:
+        total = None
+        for (la0, la1, lo0, lo1, sign) in _SST_INDEX_BOXES[name]:
+            bm = sign * _box_mean(sst, la0, la1, lo0, lo1)
+            total = bm if total is None else total + bm
+        series.append(np.nan_to_num(total.values.astype(np.float32), nan=0.0))
+    return np.stack(series, axis=0)
+
+
+def sst_index_block(idx_series, valid_idx, lags, step, lat, lon):
+    """Broadcast per-sample index values to (N, n_names*n_lags, lat, lon).
+
+    `step` = 1 for weekly index units, 7 for daily. Channel order lag-major.
+    """
+    cols = [idx_series[:, valid_idx - step * lag].T for lag in lags]  # each (N, n_names)
+    stacked = np.concatenate(cols, axis=1).astype(np.float32)         # (N, n_names*n_lags)
+    N, C = stacked.shape
+    return np.broadcast_to(stacked[:, :, None, None], (N, C, lat, lon)).astype(np.float32)
+
+
 def in_out_channels(cfg) -> tuple[int, int]:
     """(in_channels, out_channels) for building the model -- matches assemble_arrays exactly."""
     history_weeks = int(cfg.data.history_weeks)
-    in_channels = history_weeks * len(input_vars(cfg)) + 2  # +2 day-of-year encoding (cos, sin)
+    in_channels = history_weeks * len(input_vars(cfg)) + n_sst_index_channels(cfg) + 2  # + SST indices + 2 seasonal (cos, sin)
     out_channels = len(target_vars(cfg))
     return in_channels, out_channels
 
@@ -49,6 +116,7 @@ def pack_windows(
     out_leads: np.ndarray,
     doy_cos_vals: np.ndarray,
     doy_sin_vals: np.ndarray,
+    extra: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Pack pre-built per-sample history and lead windows into model-ready tensors.
 
@@ -68,12 +136,16 @@ def pack_windows(
     in_out_channels() counts it.
     """
     N, hw, niv, lat, lon = in_hist.shape
-    # (N, history_weeks, n_in_vars, lat, lon) -> (N, history_weeks*n_in_vars, lat, lon)
     flat_hist = in_hist.reshape(N, hw * niv, lat, lon).astype(np.float32)
-    inputs = np.empty((N, hw * niv + 2, lat, lon), dtype=np.float32)
-    inputs[:, : hw * niv] = flat_hist
-    inputs[:, -2] = doy_cos_vals[:, None, None]  # broadcast over lat, lon
-    inputs[:, -1] = doy_sin_vals[:, None, None]
+    parts = [flat_hist]
+    if extra is not None and extra.shape[1] > 0:
+        parts.append(np.nan_to_num(extra, nan=0.0).astype(np.float32))
+    body = np.concatenate(parts, axis=1) if len(parts) > 1 else flat_hist
+    nb = body.shape[1]
+    inputs = np.empty((N, nb + 2, lat, lon), dtype=np.float32)
+    inputs[:, :nb] = body
+    inputs[:, nb] = doy_cos_vals[:, None, None]      # broadcast over lat, lon
+    inputs[:, nb + 1] = doy_sin_vals[:, None, None]  # seasonal pair stays LAST
     targets = np.asarray(out_leads, dtype=np.float32)
     return inputs, targets
 
@@ -101,8 +173,10 @@ def assemble_arrays(weekly: xr.Dataset, cfg) -> dict:
     in_vars = input_vars(cfg)
     out_vars = target_vars(cfg)
 
+    idx_names = sst_index_names(cfg)
+    idx_lags = sst_index_lags(cfg)
     n_time = weekly.sizes["time"]
-    lo = history_weeks - 1
+    lo = max([history_weeks - 1] + (idx_lags if idx_names else []))  # deepest lookback
     hi = n_time - max_lead
     if hi <= lo:
         raise ValueError(
@@ -134,5 +208,13 @@ def assemble_arrays(weekly: xr.Dataset, cfg) -> dict:
     # out_stack[:, lead_idx] -> (n_out_vars, N, n_leads, lat, lon) -> (N, n_leads, n_out_vars, lat, lon)
     out_leads = out_stack[:, lead_idx, :, :].transpose(1, 2, 0, 3, 4)
 
-    inputs, targets = pack_windows(in_hist, out_leads, doy_cos[valid_idx], doy_sin[valid_idx])
+    extra = None
+    if idx_names:
+        lat, lon = weekly.sizes["latitude"], weekly.sizes["longitude"]
+        idx_series = compute_sst_index_series(weekly, cfg)
+        extra = sst_index_block(idx_series, valid_idx, idx_lags, 1, lat, lon)
+
+    inputs, targets = pack_windows(
+        in_hist, out_leads, doy_cos[valid_idx], doy_sin[valid_idx], extra
+    )
     return {"inputs": inputs, "targets": targets, "time": weekly.time.values[valid_idx]}
