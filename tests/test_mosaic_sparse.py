@@ -64,3 +64,26 @@ def test_block_attn_size_divisibility_guard():
     x = torch.randn(50, 1, 32)
     with pytest.raises(ValueError):
         attn(x)
+
+
+def test_interp_chunking_is_numerically_exact():
+    """CrossAttentionInterpolate: chunking the target dim must equal the single-shot
+    result exactly (each target pixel's softmax is over its own neighbours only)."""
+    pytest.importorskip("sklearn")
+    from s2s.models.mosaic.primitives import CrossAttentionInterpolate
+
+    cfg = SimpleNamespace(k_neighbors=4, dim=32, num_heads=4, rmsnorm_elementwise_affine=True)
+    interp = CrossAttentionInterpolate(cfg).eval()
+    torch.manual_seed(0)
+    pos_from = torch.rand(40, 2)   # (n_from, 2) lon/lat radians
+    pos_to = torch.rand(50, 2)     # (n_to, 2)
+    interp.initialize_interpolation_scheme(pos_from, pos_to)
+    x = torch.randn(40, 3, 32)     # (n_from, batch, dim)
+
+    with torch.no_grad():
+        interp.interp_chunk_budget = 10 ** 12   # single shot (no chunking)
+        o_full = interp(x)
+        interp.interp_chunk_budget = 1          # force maximal chunking
+        o_chunk = interp(x)
+    assert o_full.shape == (50, 3, 32)
+    torch.testing.assert_close(o_full, o_chunk, rtol=1e-5, atol=1e-5)

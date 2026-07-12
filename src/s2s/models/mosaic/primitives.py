@@ -280,6 +280,10 @@ class CrossAttentionInterpolate(nn.Module):
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.scale = head_dim ** -0.5
+        # Target-dim chunk budget (elements) for forward(); bounds the
+        # (chunk, k, batch, heads, head_dim) gather so interpolation scales to
+        # high resolution (lever f / ADR-0007). Large enough to be a no-op at 5.625 deg.
+        self.interp_chunk_budget = 256_000_000
 
         self.kv_norm = RMSNorm(dim, elementwise_affine=config.rmsnorm_elementwise_affine)
         self.to_q = nn.Linear(self.space_dim, dim, bias=False)
@@ -311,16 +315,32 @@ class CrossAttentionInterpolate(nn.Module):
         q = self.to_q(self.rel_pos)
         q = rearrange(q, 's k (h d) -> s k 1 h d', h=self.num_heads)
 
-        x = self.kv_norm(x_from)
-
-        kv = self.to_kv(x)
+        kv = self.to_kv(self.kv_norm(x_from))
         kv = rearrange(kv, 's b (n h d) -> n s b h d', h=self.num_heads, n=2)
 
-        k, v = kv[:, self.neighbors]
+        s_to = self.neighbors.shape[0]
+        k_nb = self.neighbors.shape[1]
+        b = kv.shape[2]
+        # Each target pixel attends only over its own k neighbours (softmax on dim=1),
+        # so the target dim is fully independent -> chunking over it is EXACT, not an
+        # approximation. Chunk size auto-scales with batch to bound the gather memory.
+        per_row = max(1, k_nb * b * self.num_heads * self.head_dim)
+        chunk = max(1, int(self.interp_chunk_budget) // per_row)
 
-        attn_scores = (q * k).sum(dim=-1, keepdim=True) * self.scale
-        attn_weights = torch.softmax(attn_scores, dim=1, dtype=torch.float32).type_as(k)
-        out = (attn_weights * v).sum(dim=1)
+        def _attend(sl):
+            q_c = q[sl]                                   # (cs, k, 1, h, d)
+            k_c, v_c = kv[:, self.neighbors[sl]]          # each (cs, k, b, h, d)
+            scores = (q_c * k_c).sum(dim=-1, keepdim=True) * self.scale
+            w = torch.softmax(scores, dim=1, dtype=torch.float32).type_as(k_c)
+            return (w * v_c).sum(dim=1)                   # (cs, b, h, d)
+
+        if s_to <= chunk:
+            out = _attend(slice(0, s_to))
+        else:
+            out = torch.cat(
+                [_attend(slice(i, min(i + chunk, s_to))) for i in range(0, s_to, chunk)],
+                dim=0,
+            )
 
         out = rearrange(out, 's b h d -> s b (h d)')
         out = self.to_o(out)
