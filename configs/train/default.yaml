@@ -9,6 +9,11 @@ precision: bf16-mixed          # good fit for H100/A100
 num_workers: 8
 gradient_clip_val: 1.0
 
+# Gradient accumulation (ADR-0008): optimizer steps every N micro-batches, averaging
+# the gradient over batch_size*N samples at no extra memory. 1 = off. Used at 1.5deg
+# (batch_size=4, accumulate=8 -> effective batch 32, matching the 5.625deg regime).
+accumulate_grad_batches: 1
+
 # LR schedule: linear warmup then cosine decay to min_lr.
 warmup_epochs: 2
 min_lr: 1.0e-6

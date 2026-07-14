@@ -76,6 +76,12 @@ def main(cfg: DictConfig) -> None:
         enable_checkpointing=not fast_dev_run,
         accelerator="auto",
         devices=1,
+        # Gradient accumulation: at 1.5deg memory forces batch_size=4, but the 5.625deg
+        # regime that calibrated used batch_size=32. Accumulating N micro-batches before
+        # each optimizer step averages the gradient over batch_size*N distinct samples at
+        # NO extra memory (RMSNorm -> no batch-stat coupling, so it is gradient-equivalent
+        # to a true larger batch). Default 1 = unchanged. (ADR-0008)
+        accumulate_grad_batches=int(getattr(cfg.train, "accumulate_grad_batches", 1)),
     )
     trainer.fit(lit, datamodule=dm)
 
