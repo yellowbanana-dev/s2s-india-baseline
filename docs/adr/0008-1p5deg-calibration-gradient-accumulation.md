@@ -51,3 +51,12 @@ Wired as `cfg.train.accumulate_grad_batches` (default 1 = unchanged) in `train.p
 - 1.5° is a hard project requirement, so the model must be made to train correctly here; this is
   the first, cheapest, most-targeted intervention (matches the known batch difference).
 - No memory increase, ~same wall-clock. Backward-compatible (default 1) for all 5.625° runs.
+
+
+## Outcome (2026-07-12) — CONFIRMED
+
+Retrain with `accumulate_grad_batches=8` (effective batch 32): best-val moved to **epoch 12**
+(was epoch 1), t2m **SER 0.66–0.69** (was ~0.006), both gates **PASS** (CIs exclude 0). t2m
+crpss_vs_prob wk3/4 = 0.165/0.152, precip = 0.107/0.037. The batch-dynamics diagnosis is
+confirmed. See `results/phase_c_lever_f_note.md`. Residual under-dispersion (SER ~0.69 vs the
+5.625° ~0.90) remains — a follow-up calibration lever, not a collapse.
