@@ -12,13 +12,24 @@ torch = pytest.importorskip("torch")
 from s2s.models.mosaic.primitives import MosaicAttention
 
 
-def _cfg(dim=32, num_heads=4, block_attn_size=16, sparse_block_size=8, sparse_block_count=2):
+def _cfg(dim=32, num_heads=4, block_attn_size=16, sparse_block_size=8, sparse_block_count=2,
+         gqa_ratio=1):
     return SimpleNamespace(
-        dim=dim, num_heads=num_heads, gqa_ratio=1, qkv_compress_ratio=1,
+        dim=dim, num_heads=num_heads, gqa_ratio=gqa_ratio, qkv_compress_ratio=1,
         block_attn_size=block_attn_size, sparse_block_size=sparse_block_size,
         sparse_block_count=sparse_block_count, rope=False, rope_theta=10000,
         rmsnorm_elementwise_affine=True,
     )
+
+
+def test_gqa_ratio_gt_1_rejected():
+    # MAJ-1 (review 2026-07-14): the PyTorch reference attention supports gqa_ratio=1 only;
+    # gqa_ratio>1 (kv_heads<q_heads) must fail fast at construction, not with an opaque
+    # SDPA shape error at forward. Covers both the compressed and block-only paths.
+    with pytest.raises(ValueError):
+        MosaicAttention(_cfg(gqa_ratio=2), block_attn_only=False)
+    with pytest.raises(ValueError):
+        MosaicAttention(_cfg(gqa_ratio=2), block_attn_only=True)
 
 
 def test_sparse_forward_shape_and_finite():
