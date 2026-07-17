@@ -256,6 +256,25 @@ def main(cfg: DictConfig) -> None:
     y_true = _to_physical(y_true, channel_axis=2)
     preds = _to_physical(preds, channel_axis=3)
 
+    # --- MAJ-3 (review 2026-07-14): optional COMMON-GRID coarsening for the
+    # cross-resolution CRPSS comparison (ADR-0007 f3). Native-grid CRPSS is NOT
+    # comparable across resolutions (CRPS magnitude scales with grid); when
+    # eval.common_grid is set, area-conservatively coarsen the forecast members,
+    # truth, and (below) the train climatology pool to the common grid BEFORE
+    # India-box scoring. Default null => OFF => native-grid path unchanged.
+    common_grid = cfg.eval.get("common_grid", None)
+    if common_grid:
+        from s2s.eval.regrid import equiangular_grid, regrid_conservative
+        _dst_res = float(common_grid["resolution_deg"])
+        _dst_lats, _dst_lons = equiangular_grid(
+            _dst_res, with_poles=bool(common_grid.get("with_poles", False))
+        )
+        preds = regrid_conservative(preds, lats, lons, _dst_lats, _dst_lons)
+        y_true = regrid_conservative(y_true, lats, lons, _dst_lats, _dst_lons)
+        print(f"COMMON-GRID eval (MAJ-3): {len(lats)}x{len(lons)} -> "
+              f"{len(_dst_lats)}x{len(_dst_lons)} @ {_dst_res} deg conservative")
+        lats, lons = _dst_lats, _dst_lons
+
     # --- reconstruct the TEST weekly time axis so each (sample, lead) has a date,
     # for week-of-year pooling + absolute-event physical reconstruction. ---
     processed = Path(cfg.data.paths.processed)
@@ -295,6 +314,10 @@ def main(cfg: DictConfig) -> None:
     for ci, var in enumerate(out_vars):
         clim_doy = _clim_doy(cfg, var)
         train_weekly = _train_weekly_anom(cfg, var)  # physical-unit anomalies + time
+        if common_grid:
+            from s2s.eval.regrid import regrid_conservative_da
+            train_weekly = regrid_conservative_da(train_weekly, lats, lons)
+            clim_doy = regrid_conservative_da(clim_doy, lats, lons)
 
         for li, lead_week in enumerate(lead_weeks):
             truth = y_true[:, li, ci]            # (N, lat, lon) physical anomaly

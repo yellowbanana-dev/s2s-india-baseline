@@ -61,3 +61,10 @@ checkpoint: null
 
 # Where the eval writes metrics.csv + rank-hist/reliability PNGs.
 results_dir: results/eval
+
+# Cross-resolution common-grid comparison (MAJ-3, review 2026-07-14). null => OFF => native-grid
+# scoring, byte-identical to the pre-review eval (5.625 deg reproduction + in-progress-run eval
+# unaffected). Set e.g. {resolution_deg: 5.625} to area-conservatively coarsen forecast, truth,
+# and the train climatology pool to a common grid before India-box scoring. Both the 1.5 deg and
+# 5.625 deg models must be scored with the SAME value for an apples-to-apples CRPSS.
+common_grid: null
