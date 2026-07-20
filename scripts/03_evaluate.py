@@ -269,10 +269,16 @@ def main(cfg: DictConfig) -> None:
         _dst_lats, _dst_lons = equiangular_grid(
             _dst_res, with_poles=bool(common_grid.get("with_poles", False))
         )
+        _nan_before = float(np.isnan(preds).mean()), float(np.isnan(y_true).mean())
         preds = regrid_conservative(preds, lats, lons, _dst_lats, _dst_lons)
         y_true = regrid_conservative(y_true, lats, lons, _dst_lats, _dst_lons)
+        _nan_after = float(np.isnan(preds).mean()), float(np.isnan(y_true).mean())
         print(f"COMMON-GRID eval (MAJ-3): {len(lats)}x{len(lons)} -> "
               f"{len(_dst_lats)}x{len(_dst_lons)} @ {_dst_res} deg conservative")
+        # NaN fractions must not blow up across the regrid; a jump to ~1.0 was the bug that
+        # made every gate silently FAIL (0.0*NaN==NaN propagates through zero weights).
+        print(f"  NaN frac preds {_nan_before[0]:.4f} -> {_nan_after[0]:.4f} | "
+              f"truth {_nan_before[1]:.4f} -> {_nan_after[1]:.4f}")
         lats, lons = _dst_lats, _dst_lons
 
     # --- reconstruct the TEST weekly time axis so each (sample, lead) has a date,

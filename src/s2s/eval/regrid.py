@@ -92,16 +92,50 @@ def conservative_matrices(src_lat, src_lon, dst_lat, dst_lon):
     return w_lat, w_lon
 
 
-def regrid_conservative(field, src_lat, src_lon, dst_lat, dst_lon):
-    """field (..., n_src_lat, n_src_lon) -> (..., n_dst_lat, n_dst_lon)."""
+def _apply(w_lat, w_lon, chunk):
+    """NaN-aware separable conservative apply on a (b, lat, lon) float64 block.
+
+    NaN-AWARENESS IS LOAD-BEARING, not defensive polish. A plain matmul regrid computes
+    out[i] = sum_j w[i,j]*a[j]; since 0.0*NaN == NaN in IEEE-754, a single missing source
+    cell poisons every target cell sharing its row/column -- even when w is the exact
+    identity. The eval fields carry NaN (the scorer uses nanmean/skipna throughout), so an
+    unguarded regrid turns the whole field NaN and every gate silently reports FAIL. We
+    therefore average over the FINITE source cells only and renormalise by the weight mass
+    that actually landed on them; a target cell with no finite source overlap is NaN.
+    """
+    finite = np.isfinite(chunk)
+    if finite.all():                                        # fast path: exact, single pass
+        tmp = np.einsum('ij,bjk->bik', w_lat, chunk, optimize=True)
+        return np.einsum('bik,lk->bil', tmp, w_lon, optimize=True)
+    vals = np.where(finite, chunk, 0.0)
+    num = np.einsum('bik,lk->bil',
+                    np.einsum('ij,bjk->bik', w_lat, vals, optimize=True), w_lon, optimize=True)
+    den = np.einsum('bik,lk->bil',
+                    np.einsum('ij,bjk->bik', w_lat, finite.astype(np.float64), optimize=True),
+                    w_lon, optimize=True)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return np.where(den > 0, num / den, np.nan)
+
+
+def regrid_conservative(field, src_lat, src_lon, dst_lat, dst_lon, block=None):
+    """field (..., n_src_lat, n_src_lon) -> (..., n_dst_lat, n_dst_lon).
+
+    NaN-aware (see _apply). Processed in blocks over the flattened leading dims so the
+    float64 working copy stays bounded at high resolution (a full 1.5deg member ensemble
+    would otherwise materialise ~11 GB in one go).
+    """
     w_lat, w_lon = conservative_matrices(src_lat, src_lon, dst_lat, dst_lon)
-    a = np.asarray(field, dtype=np.float64)
+    a = np.asarray(field)
     lead = a.shape[:-2]
-    a2 = a.reshape(-1, a.shape[-2], a.shape[-1])
-    tmp = np.einsum('ij,bjk->bik', w_lat, a2, optimize=True)
-    out = np.einsum('bik,lk->bil', tmp, w_lon, optimize=True)
-    out = out.reshape(*lead, w_lat.shape[0], w_lon.shape[0])
-    return out.astype(np.asarray(field).dtype, copy=False)
+    n_lat, n_lon = a.shape[-2], a.shape[-1]
+    a2 = a.reshape(-1, n_lat, n_lon)
+    nb = a2.shape[0]
+    if block is None:
+        block = max(1, int(64_000_000 // max(1, n_lat * n_lon)))
+    out = np.empty((nb, w_lat.shape[0], w_lon.shape[0]), dtype=np.float64)
+    for s in range(0, nb, block):
+        out[s:s + block] = _apply(w_lat, w_lon, a2[s:s + block].astype(np.float64))
+    return out.reshape(*lead, w_lat.shape[0], w_lon.shape[0]).astype(a.dtype, copy=False)
 
 
 def regrid_conservative_da(da, dst_lat, dst_lon, lat_name="latitude", lon_name="longitude"):

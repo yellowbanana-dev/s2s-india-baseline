@@ -74,3 +74,46 @@ def test_da_handles_dayofyear_lonlat_order():
     )
     out = regrid_conservative_da(da, DST[0], DST[1])
     assert out.shape == (5, DST[0].size, DST[1].size)
+
+
+# --- NaN-safety (regression for the MAJ-3 identity-control failure) ---
+# A plain matmul regrid propagates NaN through ZERO weights (0.0*NaN==NaN), so one missing
+# cell turned an entire eval field NaN and every decision gate reported FAIL. These lock the
+# NaN-aware renormalised behaviour in.
+
+def test_single_nan_does_not_contaminate_identity():
+    lat, lon = DST
+    rng = np.random.default_rng(7)
+    f = rng.standard_normal((lat.size, lon.size))
+    f[3, 5] = np.nan
+    out = regrid_conservative(f, lat, lon, lat, lon)
+    assert np.isnan(out[3, 5])                       # the missing cell stays missing
+    assert np.isnan(out).sum() == 1                  # and NOTHING else is poisoned
+    m = ~np.isnan(f)
+    assert np.allclose(out[m], f[m], atol=1e-10)     # every finite cell is bit-preserved
+
+
+def test_nan_source_cell_is_skipped_not_propagated_when_coarsening():
+    slat, slon = SRC
+    rng = np.random.default_rng(8)
+    f = rng.standard_normal((slat.size, slon.size))
+    f[60, 100] = np.nan
+    out = regrid_conservative(f, slat, slon, DST[0], DST[1])
+    assert np.isfinite(out).all()                    # one missing fine cell must not blank a coarse cell
+
+
+def test_target_with_no_finite_source_is_nan():
+    lat, lon = DST
+    f = np.full((lat.size, lon.size), np.nan)
+    out = regrid_conservative(f, lat, lon, lat, lon)
+    assert np.isnan(out).all()
+
+
+def test_nan_free_fast_path_unchanged():
+    # the finite fast path must stay bit-identical to the pre-fix behaviour
+    slat, slon = SRC
+    rng = np.random.default_rng(9)
+    f = rng.standard_normal((slat.size, slon.size))
+    a = regrid_conservative(f, slat, slon, DST[0], DST[1])
+    b = regrid_conservative(f, slat, slon, DST[0], DST[1], block=1)   # force blocking
+    assert np.allclose(a, b, atol=1e-12)
