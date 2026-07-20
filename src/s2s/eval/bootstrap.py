@@ -116,3 +116,42 @@ def crpss_by_year(model_s, ref_s, years) -> list[dict]:
             "crpss_vs_prob": crpss_from_samples(model_s[m], ref_s[m]),
         })
     return rows
+
+
+def paired_delta_crpss_bootstrap(
+    model_a, ref_a, model_b, ref_b, block_len: int = 8, n_boot: int = 5000,
+    alpha: float = 0.05, seed: int = 0,
+) -> dict:
+    """Moving-block bootstrap CI on the DIFFERENCE in CRPSS between two models (B - A)
+    scored on the SAME test inits and the SAME grid (MAJ-3 / ADR-0007 f3).
+
+    Comparing two independently-computed marginal CIs is the wrong test: overlapping
+    marginal CIs do NOT imply the difference is insignificant. Because both models forecast
+    the identical set of inits, we apply the SAME resampled block indices to all four
+    per-sample arrays, so the sampling noise common to both cancels. That makes this test
+    strictly more powerful than eyeballing marginal-CI overlap.
+
+    Returns {delta, ci_lo, ci_hi, boot_se, p_two_sided, crpss_a, crpss_b, n, ...}.
+    delta > 0 means model B is more skilful.
+    """
+    a_m, a_r, b_m, b_r = (np.asarray(x, dtype=float) for x in (model_a, ref_a, model_b, ref_b))
+    n = a_m.size
+    if any(x.shape != (n,) for x in (a_r, b_m, b_r)):
+        raise ValueError("all four per-sample arrays must be 1-D of equal length")
+    rng = np.random.default_rng(seed)
+    crpss_a = crpss_from_samples(a_m, a_r)
+    crpss_b = crpss_from_samples(b_m, b_r)
+    point = crpss_b - crpss_a
+    stats = np.empty(n_boot, dtype=float)
+    for i in range(n_boot):
+        idx = moving_block_indices(n, block_len, rng)
+        stats[i] = (crpss_from_samples(b_m[idx], b_r[idx])
+                    - crpss_from_samples(a_m[idx], a_r[idx]))
+    lo, hi = _percentile_ci(stats, alpha)
+    p = 2.0 * min(float(np.mean(stats <= 0.0)), float(np.mean(stats >= 0.0)))
+    return {
+        "delta": point, "ci_lo": lo, "ci_hi": hi,
+        "boot_se": float(np.nanstd(stats)), "p_two_sided": min(1.0, p),
+        "crpss_a": crpss_a, "crpss_b": crpss_b,
+        "n": n, "block_len": min(block_len, n), "n_boot": n_boot,
+    }

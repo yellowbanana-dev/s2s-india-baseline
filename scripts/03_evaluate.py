@@ -313,6 +313,8 @@ def main(cfg: DictConfig) -> None:
         )
 
     rows = []
+    per_sample = {}  # per-(var, lead) CRPS arrays -> per_sample_crps.npz, for the paired
+                     # model-vs-model bootstrap in scripts/04_compare_runs.py (MAJ-3)
     year_rows = []  # per-(variable, lead, calendar-year) CRPSS for the separate CSV
     rank_store = {}
     reliab = {ev["name"]: {"p": [], "y": []} for ev in cfg.eval.reliability.events}
@@ -371,6 +373,9 @@ def main(cfg: DictConfig) -> None:
                 )
                 cft2 = crps_ensemble(clim_trend2.values, t_box.values, fair=crps_fair)
                 crps_trend2_samples[s] = float(np.average(np.nanmean(cft2, axis=1), weights=w))
+            per_sample[f"{var}|{lead_week}|model"] = crps_model_samples
+            per_sample[f"{var}|{lead_week}|prob"] = crps_prob_samples
+            per_sample[f"{var}|{lead_week}|trend"] = crps_trend_samples
             crps_probclim = float(np.mean(crps_prob_samples))
             crps_climtrend = float(np.mean(crps_trend_samples))
             crps_climtrend2 = float(np.mean(crps_trend2_samples))
@@ -503,6 +508,15 @@ def main(cfg: DictConfig) -> None:
     table = pd.DataFrame(rows)
     csv_path = results_dir / "metrics.csv"
     table.to_csv(csv_path, index=False)
+
+    # Per-sample CRPS for the paired model-vs-model bootstrap (MAJ-3). Two runs scored on
+    # the same grid over the same inits can then be compared with a properly paired test
+    # instead of by eyeballing marginal-CI overlap.
+    np.savez_compressed(
+        results_dir / "per_sample_crps.npz",
+        init_times=np.asarray(init_times).astype("datetime64[ns]").astype("int64"),
+        **per_sample,
+    )
 
     # Per-calendar-year CRPSS vs probabilistic climatology (Fix 2 / C2 sensitivity).
     year_table = pd.DataFrame(year_rows)
