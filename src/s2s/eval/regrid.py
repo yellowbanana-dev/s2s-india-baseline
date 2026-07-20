@@ -139,7 +139,17 @@ def regrid_conservative(field, src_lat, src_lon, dst_lat, dst_lon, block=None):
 
 
 def regrid_conservative_da(da, dst_lat, dst_lon, lat_name="latitude", lon_name="longitude"):
-    """Conservatively regrid an xarray DataArray, preserving all non-spatial dims/coords."""
+    """Conservatively regrid an xarray DataArray, preserving dims, order, coords and name.
+
+    DIM ORDER IS LOAD-BEARING. The processed store (daily_anom.zarr) is lon-major --
+    (time, longitude, latitude) -- while the internal regrid works lat-major. Downstream
+    scorers (crps_ensemble) consume `.values` POSITIONALLY, so returning a transposed array
+    silently swaps the spatial axes: values, coords and even the India-box shape all still
+    look correct (the box is 6x6), but the spatial correspondence is scrambled and
+    crps_clim_prob inflates. This is what made both models fail the common-grid gate through
+    an otherwise numerically-exact identity regrid. We therefore transpose back to the
+    caller's original dim order before returning.
+    """
     import xarray as xr
     src_lat = da[lat_name].values
     src_lon = da[lon_name].values
@@ -149,4 +159,8 @@ def regrid_conservative_da(da, dst_lat, dst_lon, lat_name="latitude", lon_name="
     coords = {k: da_t.coords[k] for k in other if k in da_t.coords}
     coords[lat_name] = np.asarray(dst_lat)
     coords[lon_name] = np.asarray(dst_lon)
-    return xr.DataArray(out, dims=(*other, lat_name, lon_name), coords=coords)
+    result = xr.DataArray(
+        out, dims=(*other, lat_name, lon_name), coords=coords,
+        name=da.name, attrs=dict(da.attrs),
+    )
+    return result.transpose(*da.dims)

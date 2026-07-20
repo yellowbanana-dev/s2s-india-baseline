@@ -66,6 +66,8 @@ def test_da_preserves_leading_dim():
 
 def test_da_handles_dayofyear_lonlat_order():
     # climatology.zarr stores (dayofyear, longitude, latitude) -- non-standard axis order.
+    # The regrid MUST return that same order (this test previously asserted the transposed
+    # shape and so green-lit the axis swap that broke the common-grid gate).
     rng = np.random.default_rng(3)
     da = xr.DataArray(
         rng.standard_normal((5, SRC[1].size, SRC[0].size)),
@@ -73,7 +75,38 @@ def test_da_handles_dayofyear_lonlat_order():
         coords={"latitude": SRC[0], "longitude": SRC[1]},
     )
     out = regrid_conservative_da(da, DST[0], DST[1])
-    assert out.shape == (5, DST[0].size, DST[1].size)
+    assert out.dims == ("dayofyear", "longitude", "latitude")
+    assert out.shape == (5, DST[1].size, DST[0].size)
+
+
+def test_da_preserves_lon_major_axis_order():
+    """daily_anom.zarr is (time, longitude, latitude). Downstream crps_ensemble reads
+    .values positionally, so a silent transpose scrambles the spatial correspondence
+    (MAJ-3 regression: inflated crps_clim_prob -> both models failed the gate)."""
+    rng = np.random.default_rng(4)
+    da = xr.DataArray(
+        rng.standard_normal((3, SRC[1].size, SRC[0].size)),
+        dims=("time", "longitude", "latitude"),
+        coords={"latitude": SRC[0], "longitude": SRC[1]},
+    )
+    out = regrid_conservative_da(da, DST[0], DST[1])
+    assert out.dims == ("time", "longitude", "latitude")
+    assert out.shape == (3, DST[1].size, DST[0].size)
+
+
+def test_da_identity_is_positionally_exact_lon_major():
+    """The 5.625deg control: identity regrid of a lon-major array must return the SAME
+    numbers in the SAME positions -- the check that would have caught the axis swap."""
+    lat, lon = DST
+    rng = np.random.default_rng(5)
+    da = xr.DataArray(
+        rng.standard_normal((4, lon.size, lat.size)),
+        dims=("time", "longitude", "latitude"),
+        coords={"latitude": lat, "longitude": lon},
+    )
+    out = regrid_conservative_da(da, lat, lon)
+    assert out.dims == da.dims and out.shape == da.shape
+    assert np.allclose(out.values, da.values, atol=1e-10)
 
 
 # --- NaN-safety (regression for the MAJ-3 identity-control failure) ---
