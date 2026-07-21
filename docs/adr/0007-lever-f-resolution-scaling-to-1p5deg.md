@@ -113,6 +113,44 @@ local+compressed approximation (`configs/model/mosaic_5p625_sparse.yaml`). If th
 comparable skill versus the dense baseline, the f3 null is attributable to attention capacity,
 not resolution, and ADR-0007's headline conclusion must be rewritten accordingly.
 
+### MAJ-2 control OUTCOME (2026-07-20) — the control FAILED; attribution remains UNRESOLVED
+
+`configs/model/mosaic_5p625_sparse.yaml` holds resolution fixed at 5.625° and changes only the
+attention path, to separate attention capacity from resolution. **It did not produce a valid
+comparison.** Two independent runs, same seed/schedule as `mosaic_fix45`:
+
+| run | geometry | best val | vs dense 0.2886 @ ep14 | SER | paired Δ vs dense |
+|---|---|---|---|---|---|
+| v1 | local 32, compress 64 → 48 summaries | 0.3805 @ ep4 | far worse | ~0.001 | −0.30…−0.36, 12/12 worse |
+| v2 | local 32, compress 4 → 768 summaries (matches 1.5°) | 0.3818 @ ep2 | far worse | ~0.0004–0.0013 | −0.31…−0.37, 12/12 worse |
+
+v1 used the wrong invariant (compressed-token COUNT, not compression ratio, sets global context:
+48 vs the 1.5° model's 768). v2 corrected the geometry to match the 1.5° model on all three
+invariants — local fraction 1/96, 768 compressed tokens, 1:8 compress:local — and produced
+**numbers within noise of v1**. Geometry is therefore ruled out as the explanation.
+
+**Why the control is invalid.** A valid control must reproduce the 1.5° model's behaviour at
+fixed resolution. It does not: the deficit is ~10× the 1.5° model's (−0.30 vs −0.03) and the
+failure is qualitatively different — ensemble fully collapsed (SER ~0.001) versus merely
+under-dispersed (SER 0.77–0.84). The 1.5° model uses the SAME sparse path without collapsing,
+so the sparse path per se is not the cause; the 5.625° instantiation falls into a distinct
+broken optimisation regime. The control measures that regime, not the approximation under test.
+
+**Supporting diagnostic** (`scripts/_diag_noise_path.py`, weights only, no GPU): the sparse
+checkpoint shows a *learned* weakening of the ensemble-noise pathway — noise_bias/w13 RMS ratio
+0.129 vs the dense baseline's 0.442 (29%), NoiseGenerator `to_noise` norm 0.309 vs 0.766 (40%).
+A 3.4× weight reduction cannot by itself explain a ~1000× spread collapse, so the mechanism is
+only partly identified. Note the strategy gate cannot suppress noise directly: attention and the
+noise-carrying FFN are separate residual branches. See the 2:1 compressed-branch init bias
+documented under "Attention path as actually run" for a structural contributor.
+
+**Consequence for the thesis.** The f3 null is **NOT attributable to resolution**, and the
+control designed to test the attention confound could not answer the question. This must be
+written up as an open confound, not resolved in either direction. Diagnosing the collapse
+further would not rescue the control: any fix would make it differ from the 1.5° model by
+whatever was changed, reintroducing the confound it exists to remove. Deliberately stopped here
+rather than buying further GPU runs for an unanswerable comparison.
+
 ### Residual limitation of the common-grid protocol (precip)
 
 Coarsening equalises the GRID but not the ANOMALY DEFINITION: anomalies and the `log1p`
