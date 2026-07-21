@@ -1,0 +1,58 @@
+# MAJ-2 CONTROL (review 2026-07-14): the 5.625 deg baseline architecture run with the SAME
+# local+compressed attention approximation as the 1.5 deg model (ADR-0007 f3 outcome).
+#
+# WHY THIS EXISTS. The f3 comparison changed TWO things at once: resolution (5.625 -> 1.5 deg)
+# AND attention structure (dense global every layer -> local block + mean-pooled compressed
+# global, because the Triton selection kernel was never vendored). The 1.5 deg model lost to
+# the baseline, but that null cannot be attributed to resolution while attention capacity is a
+# live confounder. This config holds RESOLUTION FIXED at 5.625 deg and changes ONLY the
+# attention path, isolating the cost of the approximation.
+#
+# READOUT. Train with the same seed/schedule as mosaic_fix45, then compare dense-vs-sparse at
+# 5.625 deg with scripts/04_compare_runs.py:
+#   * if this control loses skill comparable to the 1.5 deg deficit  -> the f3 null is
+#     ATTENTION CAPACITY, not resolution; ADR-0007's conclusion must be rewritten.
+#   * if this control retains the baseline's skill                   -> the approximation is
+#     cheap at this scale and the f3 null survives as a resolution/predictability result.
+#
+# EVERY FIELD BELOW IS IDENTICAL TO configs/model/mosaic.yaml EXCEPT the three marked CHANGED.
+name: mosaic
+
+nside: 16                   # npix = 3072 (unchanged -- resolution is held fixed)
+dim: 128
+num_heads: 8                # head_dim = 128/8 = 16
+encoder_depth: 2
+decoder_depth: 2
+
+# CHANGED 3072 -> 32. Matches the 1.5 deg model's LOCAL RECEPTIVE FRACTION exactly:
+# 1.5 deg is 512/49152 = 1/96 of the domain; here 32/3072 = 1/96. 3072 % 32 == 0 (96 blocks).
+block_attn_size: 32
+sparse_block_size: 64       # unchanged -> same 64:1 compression ratio (3072/64 = 48 summaries)
+sparse_block_count: 16      # CHANGED 0 -> 16, config parity with mosaic_15deg (unused by the
+                            # PyTorch reference; belongs to the deferred Triton kernel)
+mlp_ratio: 4.0
+gqa_ratio: 1                # 1 = standard MHA (asserted by MosaicAttention)
+
+# Bottleneck unchanged: 768/768 = 1 block, so its local branch stays dense -- exactly as in
+# mosaic_15deg (12288/12288). With sparse_every=1 it also builds the compressed branch and
+# 3-way gate in BOTH configs, so bottleneck parity with the 1.5 deg model is preserved.
+bottleneck_nside: 8
+bottleneck_dim: 256
+bottleneck_num_heads: 8
+bottleneck_depth: 2
+bottleneck_block_attn_size: 768
+
+k_neighbors: 8
+qk_norm: false
+rope: true
+rope_theta: 10000
+
+# CHANGED 0 -> 1. Every CG block now runs the block-sparse path (local + compressed + gate)
+# instead of block_attn_only dense global attention. THIS IS THE ONE VARIABLE UNDER TEST.
+sparse_every: 1
+
+qkv_compress_ratio: 1
+no_compression: false
+drop_rate: 0.1
+noise_dim: 32
+lr: 3.0e-5                  # same zero-init-residual LR override as the baseline (ADR-0003/0004)
