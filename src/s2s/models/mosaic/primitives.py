@@ -145,9 +145,14 @@ def mosaic_attn_func(
     kc = reduce(k, 'b (nb bs) h d -> b nb h d', 'mean', bs=sparse_block_size)
     vc = reduce(v, 'b (nb bs) h d -> b nb h d', 'mean', bs=sparse_block_size)
     o_cmp = _sdpa_cross(q, kc, vc)
-    o_slc = o_cmp  # placeholder for the fine top-k selection branch (Triton kernel)
-
-    w = weight_ba_cmp_slc  # (3, b, s, h, 1)
+    w = weight_ba_cmp_slc  # (n_slots, b, s, h, 1)
+    if w.shape[0] == 2:
+        # gate_slots=2 (ADR-0009): the duplicate selection slot is gone, so the gate is a
+        # genuine local-vs-compressed choice and starts unbiased at 1/2 - 1/2.
+        return w[0] * o_ba + w[1] * o_cmp
+    # Legacy 3-slot placeholder: selection duplicates compressed (MAJ-1), so the effective
+    # compressed weight is w1+w2 and the model starts ~2:1 biased toward compressed.
+    o_slc = o_cmp
     return w[0] * o_ba + w[1] * o_cmp + w[2] * o_slc
 
 
@@ -237,10 +242,22 @@ class MosaicAttention(nn.Module):
         self.q_rope = RoPE(head_dim, rope_theta) if rope else None
         self.k_rope = RoPE(head_dim, rope_theta) if rope else None
 
+        # Strategy-gate slots. 3 = legacy MAJ-1 placeholder layout (local, compressed,
+        # selection) where the selection slot DUPLICATES compressed, so a uniform softmax
+        # starts the model at 1/3 local + 2/3 compressed -- a structural bias toward the
+        # deliberately low-variance mean-pooled branch (ADR-0007). 2 = duplicate slot removed
+        # (local, compressed), restoring a 1/2-1/2 start. Default 3 keeps every existing
+        # checkpoint loadable; 2 changes the gate layer shape and is a NEW experiment (ADR-0009).
+        self.gate_slots = int(getattr(config, "gate_slots", 3))
+        if self.gate_slots not in (2, 3):
+            raise ValueError(
+                f"gate_slots must be 2 (selection slot removed) or 3 (legacy placeholder), "
+                f"got {self.gate_slots}"
+            )
         if block_attn_only:
             self.to_strategy_combine_mlp = None
         else:
-            self.to_strategy_combine_mlp = nn.Linear(dim, 3 * q_heads, bias=False)
+            self.to_strategy_combine_mlp = nn.Linear(dim, self.gate_slots * q_heads, bias=False)
 
     def generate_strategy_weights(self, x):
         if self.block_attn_only:

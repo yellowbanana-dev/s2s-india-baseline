@@ -80,6 +80,7 @@ class ModelConfig:
     ortho_init: bool = False
     rmsnorm_elementwise_affine: bool = True
     no_compression: bool = False
+    gate_slots: int = 3
 
 
 @dataclass
@@ -98,6 +99,7 @@ class _MergedStageConfig:
     noise_dim: int
     drop_rate: float
     rmsnorm_elementwise_affine: bool
+    gate_slots: int = 3
 
 
 def _merge_configs(config: ModelConfig, stage_cfg) -> _MergedStageConfig:
@@ -115,6 +117,7 @@ def _merge_configs(config: ModelConfig, stage_cfg) -> _MergedStageConfig:
         noise_dim=config.noise_dim,
         drop_rate=config.drop_rate,
         rmsnorm_elementwise_affine=config.rmsnorm_elementwise_affine,
+        gate_slots=config.gate_slots,
     )
 
 
