@@ -102,18 +102,29 @@ def test_interp_grad_checkpoint_matches_and_grads_agree():
     pos_from, pos_to = torch.rand(40, 2), torch.rand(50, 2)
     interp.initialize_interpolation_scheme(pos_from, pos_to)
 
+    # The SAME input for every configuration. (A previous version of this test built a fresh
+    # random x inside run(), so it compared unrelated forward passes and failed with ~100% of
+    # elements differing -- a test bug, not a kernel bug.)
+    x0 = torch.randn(40, 3, 32)
+
     def run(use_ckpt, chunked):
         for p in interp.parameters():
             if p.grad is not None:
                 p.grad = None
         interp.interp_grad_checkpoint = use_ckpt
         interp.interp_chunk_budget_elems = 1 if chunked else 10 ** 12
-        x = torch.randn(40, 3, 32, requires_grad=True)
+        x = x0.clone().requires_grad_(True)
         o = interp(x)
         o.pow(2).sum().backward()
         return o.detach().clone(), x.grad.detach().clone()
 
     o_ref, g_ref = run(False, False)
+
+    # guard against the failure mode above: identical config must give identical results
+    o_again, g_again = run(False, False)
+    torch.testing.assert_close(o_again, o_ref, rtol=0, atol=0)
+    torch.testing.assert_close(g_again, g_ref, rtol=0, atol=0)
+
     for use_ckpt, chunked in ((True, False), (True, True), (False, True)):
         o, g = run(use_ckpt, chunked)
         torch.testing.assert_close(o, o_ref, rtol=1e-5, atol=1e-5)
