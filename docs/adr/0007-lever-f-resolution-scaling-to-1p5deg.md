@@ -54,6 +54,16 @@ Resolved with the human before f1 (which path, and whether the upstream `ops.py`
 ## Consequences
 
 - ~14× grid points → smaller batch and likely gradient checkpointing; memory validated in f2.
+- **Interpolation chunking bounds TRANSIENT memory only, not training memory (MAJ-4, review
+  2026-07-14).** Chunking the cross-attention interpolators over the target dim is numerically
+  exact, but under autograd every chunk's gathered `k_c`/`v_c` is still saved for backward, so
+  the saved-activation footprint is identical chunked or not (~6.4 GB to-HEALPix + ~3.8 GB
+  to-lonlat in bf16 at B=4, M=8, k=8, h=8, d=16); chunking caps only the additional transient
+  (~1 GB/chunk). At eval (M=1, b=4) the chunk size exceeds both target sizes, so chunking is
+  inactive entirely. Do NOT rely on chunking when sizing the next scale-up (more members,
+  bigger batch, nside=128) — the lever that actually bounds training memory is gradient
+  checkpointing, now available opt-in via `CrossAttentionInterpolate.interp_grad_checkpoint`
+  (default False, so current runs are unaffected).
 - Poles enter the global input (India eval is far from poles; cos-lat weight → 0 at ±90 is fine).
 - If Triton-vendored: CC-BY-NC attribution on `ops.py`; `triton` runtime dep.
 - If 1.5° lifts CRPSS beyond the baseline CI, resolution was the ceiling — the Phase-C result.

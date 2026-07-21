@@ -23,6 +23,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, reduce, repeat
 from torch.nn import RMSNorm
+from torch.utils.checkpoint import checkpoint as _grad_checkpoint
 
 # LOCAL MODIFICATION: flash_attn is optional; fall back to torch SDPA.
 try:
@@ -280,10 +281,26 @@ class CrossAttentionInterpolate(nn.Module):
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.scale = head_dim ** -0.5
-        # Target-dim chunk budget (elements) for forward(); bounds the
-        # (chunk, k, batch, heads, head_dim) gather so interpolation scales to
-        # high resolution (lever f / ADR-0007). Large enough to be a no-op at 5.625 deg.
-        self.interp_chunk_budget = 256_000_000
+        # Target-dim chunk size for forward(), in ELEMENTS -- not bytes, so the actual
+        # transient scales with dtype (x2 bf16, x4 fp32) (MIN-9). No-op at 5.625 deg.
+        #
+        # MAJ-4 (review 2026-07-14) -- WHAT CHUNKING DOES AND DOES NOT BOUND. Chunking bounds
+        # the TRANSIENT working set only; it does NOT reduce TRAINING memory. Under autograd
+        # every chunk's gathered k_c/v_c is saved for backward, so the total saved-activation
+        # footprint is IDENTICAL chunked or not (~6.4 GB to-HEALPix + ~3.8 GB to-lonlat, bf16,
+        # at B=4, M=8, k=8, h=8, d=16). Chunking caps only the ADDITIONAL transient
+        # (~1 GB/chunk at 256M elements). At eval (M=1, b=4) the chunk size exceeds both target
+        # sizes, so chunking is inactive there entirely. The earlier wording ("bounds the gather
+        # so interpolation scales to high resolution") was true of inference, not training.
+        # For the NEXT scale-up (more members, bigger batch, nside=128) the correct lever is
+        # gradient checkpointing -- see interp_grad_checkpoint below.
+        self.interp_chunk_budget_elems = 256_000_000
+
+        # Opt-in gradient checkpointing around the per-chunk attend (MAJ-4). Default False =>
+        # bit-identical behaviour and identical memory to before. When True, k_c/v_c are
+        # RECOMPUTED in backward instead of saved, which is what actually bounds training
+        # memory, at the cost of one extra forward per chunk.
+        self.interp_grad_checkpoint = False
 
         self.kv_norm = RMSNorm(dim, elementwise_affine=config.rmsnorm_elementwise_affine)
         self.to_q = nn.Linear(self.space_dim, dim, bias=False)
@@ -323,9 +340,11 @@ class CrossAttentionInterpolate(nn.Module):
         b = kv.shape[2]
         # Each target pixel attends only over its own k neighbours (softmax on dim=1),
         # so the target dim is fully independent -> chunking over it is EXACT, not an
-        # approximation. Chunk size auto-scales with batch to bound the gather memory.
+        # approximation. Chunk size auto-scales with batch to bound the TRANSIENT gather
+        # (see the MAJ-4 note in __init__: this does NOT reduce saved-activation memory
+        # under training; interp_grad_checkpoint is the lever that does).
         per_row = max(1, k_nb * b * self.num_heads * self.head_dim)
-        chunk = max(1, int(self.interp_chunk_budget) // per_row)
+        chunk = max(1, int(self.interp_chunk_budget_elems) // per_row)
 
         def _attend(sl):
             q_c = q[sl]                                   # (cs, k, 1, h, d)
@@ -334,11 +353,17 @@ class CrossAttentionInterpolate(nn.Module):
             w = torch.softmax(scores, dim=1, dtype=torch.float32).type_as(k_c)
             return (w * v_c).sum(dim=1)                   # (cs, b, h, d)
 
+        def _run(sl):
+            # MAJ-4: recompute the gather in backward instead of saving it, when opted in.
+            if self.interp_grad_checkpoint and torch.is_grad_enabled():
+                return _grad_checkpoint(_attend, sl, use_reentrant=False)
+            return _attend(sl)
+
         if s_to <= chunk:
-            out = _attend(slice(0, s_to))
+            out = _run(slice(0, s_to))
         else:
             out = torch.cat(
-                [_attend(slice(i, min(i + chunk, s_to))) for i in range(0, s_to, chunk)],
+                [_run(slice(i, min(i + chunk, s_to))) for i in range(0, s_to, chunk)],
                 dim=0,
             )
 
