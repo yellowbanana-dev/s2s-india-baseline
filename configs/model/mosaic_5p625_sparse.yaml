@@ -15,6 +15,22 @@
 #   * if this control retains the baseline's skill                   -> the approximation is
 #     cheap at this scale and the f3 null survives as a resolution/predictability result.
 #
+# CORRECTION 2026-07-20 (v2). The FIRST version of this config set sparse_block_size=64 to
+# preserve "the same 64:1 compression ratio". That was the wrong invariant and the run it
+# produced is INVALID as an attribution control:
+#   v1: 3072/64 =  48 compressed tokens -> 32+48  =  80 keys/token
+#   1.5 deg:      768 compressed tokens -> 512+768= 1280 keys/token
+# v1 starved global context by 16x, and inverted the geometry (compress block 64 LARGER than
+# the local block 32, a regime that does not exist at 1.5 deg where it is 1:8). The v1 run
+# collapsed: best val 0.3805 @ epoch 4 then monotonic overfit, spread_error_ratio ~0.001
+# (ensemble fully collapsed to deterministic), CRPSS negative, all 12/12 cells worse than the
+# dense baseline by ~0.30-0.36 -- an order of magnitude beyond the 1.5 deg deficit (~0.02-0.04)
+# and a QUALITATIVELY different failure (1.5 deg SER is 0.77-0.84, not 0.001). It therefore
+# measured capacity starvation, not the approximation under test.
+#
+# v2 scales sparse_block_size to 4, matching the 1.5 deg geometry on all three invariants:
+#   local fraction 32/3072 = 512/49152 = 1/96 | compressed tokens 768 = 768 | compress:local 1:8
+#
 # EVERY FIELD BELOW IS IDENTICAL TO configs/model/mosaic.yaml EXCEPT the three marked CHANGED.
 name: mosaic
 
@@ -27,7 +43,10 @@ decoder_depth: 2
 # CHANGED 3072 -> 32. Matches the 1.5 deg model's LOCAL RECEPTIVE FRACTION exactly:
 # 1.5 deg is 512/49152 = 1/96 of the domain; here 32/3072 = 1/96. 3072 % 32 == 0 (96 blocks).
 block_attn_size: 32
-sparse_block_size: 64       # unchanged -> same 64:1 compression ratio (3072/64 = 48 summaries)
+sparse_block_size: 4        # CHANGED 64 -> 4 (v2). Gives 3072/4 = 768 compressed tokens, the
+                            # SAME global-context budget as mosaic_15deg (49152/64 = 768), and
+                            # restores the 1:8 compress:local ratio. 3072 % 4 == 0; the
+                            # bottleneck also divides (768 % 4 == 0).
 sparse_block_count: 16      # CHANGED 0 -> 16, config parity with mosaic_15deg (unused by the
                             # PyTorch reference; belongs to the deferred Triton kernel)
 mlp_ratio: 4.0
