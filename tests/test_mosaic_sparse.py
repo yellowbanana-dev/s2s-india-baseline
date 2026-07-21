@@ -120,10 +120,15 @@ def test_interp_grad_checkpoint_matches_and_grads_agree():
 
     o_ref, g_ref = run(False, False)
 
-    # guard against the failure mode above: identical config must give identical results
+    # Guard against the failure mode above: the same config twice must agree. NOT bit-exact --
+    # the backward of the advanced-index gather kv[:, neighbors[sl]] is a scatter_add, whose
+    # reduction order is non-deterministic on CUDA and on multithreaded CPU, so gradients vary
+    # by ~1 float32 ULP (1.19e-07 measured) run to run. The tolerance below is still five orders
+    # of magnitude tighter than the bug this guards against (comparing unrelated inputs gives
+    # diffs of ~1.0), so it keeps its teeth.
     o_again, g_again = run(False, False)
-    torch.testing.assert_close(o_again, o_ref, rtol=0, atol=0)
-    torch.testing.assert_close(g_again, g_ref, rtol=0, atol=0)
+    torch.testing.assert_close(o_again, o_ref, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(g_again, g_ref, rtol=1e-5, atol=1e-5)
 
     for use_ckpt, chunked in ((True, False), (True, True), (False, True)):
         o, g = run(use_ckpt, chunked)
