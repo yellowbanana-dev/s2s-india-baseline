@@ -66,6 +66,8 @@ from s2s.eval.metrics import (
     reliability_curve,
     rmse,
     spread_error_ratio,
+    inflate_ensemble_spread,
+    spread_inflation_factor,
 )
 from s2s.models.ensemble import P2Ensemble
 from s2s.models.lit import S2SLitModule
@@ -445,6 +447,27 @@ def main(cfg: DictConfig) -> None:
             rank_store[(var, lead_week)] = rank_histogram(mem_box, tr_box_v)
             ser = spread_error_ratio(mem_box, tr_box_v)
 
+            # ---- spread-calibration attribution (default OFF; adds columns only) ----
+            # Isolates how much of a CRPS gap is under-dispersion vs genuine skill: rescale
+            # ensemble deviations so SER hits target_ser (ensemble mean, and therefore ACC/RMSE,
+            # unchanged), then re-score CRPS through the IDENTICAL pipeline against the SAME
+            # references. An UPPER BOUND on the calibration share -- not a better model.
+            _sc = cfg.eval.get("spread_calibration", None)
+            alpha = crps_model_cal = skill_prob_cal = ser_cal = float("nan")
+            if _sc is not None and bool(_sc.get("enabled", False)):
+                alpha = spread_inflation_factor(
+                    mem_box, tr_box_v, float(_sc.get("target_ser", 1.0))
+                )
+                if np.isfinite(alpha):
+                    members_cal = inflate_ensemble_spread(members, alpha)
+                    crps_cal_box = _india_box(
+                        truth_da.copy(data=crps_ensemble(members_cal, truth, fair=crps_fair)), cfg
+                    )
+                    crps_model_cal = _latweighted_spatial_mean(crps_cal_box)
+                    per_sample[f"{var}|{lead_week}|model_cal"] = _latweighted_per_sample(crps_cal_box)
+                    skill_prob_cal = crpss(crps_model_cal, crps_probclim)
+                    ser_cal = spread_error_ratio(inflate_ensemble_spread(mem_box, alpha), tr_box_v)
+
             # ---- reliability events ----
             for ev in cfg.eval.reliability.events:
                 if ev["variable"] != var:
@@ -503,6 +526,10 @@ def main(cfg: DictConfig) -> None:
                 "acc_mean": acc_box,
                 "rmse_mean": rmse_box,
                 "spread_error_ratio": ser,
+                "spread_inflation_alpha": alpha,
+                "crps_model_cal": crps_model_cal,
+                "crpss_vs_prob_cal": skill_prob_cal,
+                "spread_error_ratio_cal": ser_cal,
             })
 
     table = pd.DataFrame(rows)

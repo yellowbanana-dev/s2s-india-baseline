@@ -199,6 +199,43 @@ not commute with area-averaging. The two runs' climatology references differ by 
 the precip comparison carries this caveat. A fully clean protocol would coarsen in physical
 space and recompute anomalies — deferred, and flagged here so it is not discovered downstream.
 
+## Pre-registration — spread-calibration attribution of the f3 deficit (2026-07-21)
+
+The f3 null has two live confounds: attention structure (MAJ-1 — unresolvable, the MAJ-2 control
+failed) and ensemble under-dispersion (1.5 deg SER 0.77-0.84 vs the baseline's 0.96-1.03). This
+registers the rule for the SECOND one BEFORE the numbers exist.
+
+**Method.** `eval.spread_calibration.enabled=true` rescales ensemble deviations about the
+ensemble MEAN so the spread-error ratio hits `target_ser` (1.0), then re-scores CRPS through the
+identical pipeline against the SAME references. The ensemble mean is untouched, so ACC/RMSE and
+all deterministic skill are held fixed; only dispersion changes. Both models are scored this way
+on the SAME common grid (5.625 deg). Emitted as NEW columns (`spread_inflation_alpha`,
+`crps_model_cal`, `crpss_vs_prob_cal`, `spread_error_ratio_cal`); the flag defaults OFF so every
+existing number is unchanged.
+
+**What it can and cannot say.** It is an UPPER BOUND on the calibration share: it asks what the
+CRPS gap would be if dispersion were perfect at fixed ensemble mean. It does NOT produce a
+calibrated model and is NOT evidence that training could reach that dispersion.
+
+**Conclusion rule (registered before results).** Let `D_native` be the common-grid CRPSS
+difference (1.5 deg minus 5.625 deg; currently -0.0255 t2m wk3, -0.0364 precip wk4) and `D_cal`
+the same difference with BOTH models spread-calibrated:
+
+- `|D_cal| <= 0.25 * |D_native|` at a gate cell -> that cell's deficit is attributed PRIMARILY to
+  under-dispersion, not resolution.
+- `|D_cal| >= 0.75 * |D_native|` -> under-dispersion does NOT explain that cell; the deficit
+  stands as genuine skill loss, with attention capacity the remaining unresolved confound.
+- In between -> partial attribution, reported as such, no headline claim either way.
+
+**Falsifier / sanity gate (checked first; if it fails the comparison is VOID).**
+`spread_error_ratio_cal` must equal `target_ser` to ~1e-6 in every scored row, and the 5.625 deg
+baseline (already near-calibrated, SER ~1) must move by <= ~0.005 CRPSS. A materially moving
+baseline means the diagnostic is mis-specified, not that calibration explains anything.
+
+**Pre-specified cell of interest: precip wk4.** It is simultaneously one of the two
+significantly-worse cells AND the SER anomaly (0.639), with CRPSS non-monotonic in lead
+(0.0903 / 0.0469 / 0.0771 at wk3/4/5). If under-dispersion explains any cell, this is the one.
+
 ## Consequences
 
 - ~14× grid points → smaller batch and likely gradient checkpointing; memory validated in f2.

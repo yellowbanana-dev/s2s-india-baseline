@@ -165,6 +165,46 @@ def spread_error_ratio(forecast_members: np.ndarray, truth: np.ndarray) -> float
     return float(spread / rmse_mean)
 
 
+def inflate_ensemble_spread(forecast_members: np.ndarray, alpha: float) -> np.ndarray:
+    """Rescale ensemble deviations about the ensemble mean by `alpha` (post-hoc diagnostic).
+
+        members -> ens_mean + alpha * (members - ens_mean)
+
+    The ensemble MEAN is untouched, so RMSE(mean) is unchanged and `spread_error_ratio`
+    scales EXACTLY by `alpha` (spread is a pure function of the deviations). Operating
+    pointwise over the member axis, it commutes with spatial subsetting: inflating then
+    boxing == boxing then inflating.
+
+    THIS DOES NOT PRODUCE A BETTER MODEL. It answers one attribution question: how much of
+    a CRPS gap would remain if the ensemble were perfectly dispersed, holding the ensemble
+    mean (and hence the deterministic skill) fixed? Any CRPS improvement it shows is an
+    UPPER BOUND on the share of the gap attributable to under-dispersion.
+
+    M < 2, or non-finite alpha, returns an unmodified copy.
+    """
+    f = np.asarray(forecast_members, dtype=float)
+    # alpha == 1 short-circuits so the no-op is BIT-exact: mean + 1*(f - mean) otherwise
+    # differs from f by float round-off (subtract-then-re-add the mean).
+    if f.shape[0] < 2 or not np.isfinite(alpha) or float(alpha) == 1.0:
+        return f.copy()
+    mean = f.mean(axis=0, keepdims=True)
+    return mean + float(alpha) * (f - mean)
+
+
+def spread_inflation_factor(forecast_members: np.ndarray, truth: np.ndarray,
+                            target_ser: float = 1.0) -> float:
+    """alpha such that spread_error_ratio(inflate_ensemble_spread(m, alpha), truth) == target_ser.
+
+    Since inflation scales spread linearly and leaves the ensemble mean (and RMSE) fixed,
+    alpha = target_ser / current_ser exactly. Returns NaN when the current ratio is not
+    finite/positive (e.g. M==1, or a degenerate zero-error field).
+    """
+    ser = spread_error_ratio(forecast_members, truth)
+    if not np.isfinite(ser) or ser <= 0:
+        return float("nan")
+    return float(target_ser) / ser
+
+
 def reliability_curve(prob_forecast: np.ndarray, event_truth: np.ndarray, n_bins: int = 10):
     """Reliability-diagram points for a binary event (forecast prob vs obs freq).
 

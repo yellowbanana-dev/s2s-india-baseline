@@ -68,3 +68,14 @@ results_dir: results/eval
 # and the train climatology pool to a common grid before India-box scoring. Both the 1.5 deg and
 # 5.625 deg models must be scored with the SAME value for an apples-to-apples CRPSS.
 common_grid: null
+
+# Spread-calibration attribution (default OFF => zero change to existing columns/behaviour).
+# When enabled, adds spread_inflation_alpha / crps_model_cal / crpss_vs_prob_cal /
+# spread_error_ratio_cal: the ensemble deviations are rescaled about the ensemble mean so the
+# spread-error ratio hits target_ser, and CRPS is re-scored through the identical pipeline
+# against the SAME references. Bounds how much of a CRPS gap is under-dispersion rather than
+# genuine skill (the ensemble mean, and thus ACC/RMSE, is untouched). Diagnostic only -- it is
+# NOT a calibrated model, and the improvement it reports is an UPPER BOUND.
+spread_calibration:
+  enabled: false
+  target_ser: 1.0
