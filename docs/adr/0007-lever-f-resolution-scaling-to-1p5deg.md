@@ -46,6 +46,21 @@ local+compressed+selection architecture. Consequences to state wherever f3 resul
   the cmp/slc logit split is arbitrary. A checkpoint trained this way is **not** a drop-in for a
   future selection kernel — gates are not transferable, so expect a retrain, not an upgrade.
   `gqa_ratio` is now asserted to be 1 at construction (this PyTorch reference supports MHA only).
+- **The degenerate slot BIASES the gate 2:1 toward compressed at init (found 2026-07-20).**
+  Beyond being unidentifiable, `o_slc = o_cmp` means the 3-way softmax puts ~1/3 on each slot at
+  initialisation while TWO slots hold the same tensor — so attention starts as
+  `1/3 * local + 2/3 * compressed`, and the compressed branch is mean-pooled, i.e. deliberately
+  low-variance. The dense baseline has no gate and no such shrinkage. Every sparse-path model
+  therefore begins training biased toward a smoothed global summary; that is a structural
+  property of the placeholder, not a learned choice. Evidence: the 5.625 deg sparse control
+  (`mosaic_5p625_sparse`) collapsed in two independent runs (best val 0.3805 @ ep4 and 0.3818 @
+  ep2 vs the dense baseline's 0.2886 @ ep14) with spread_error_ratio ~0.001, and its checkpoint
+  shows a learned weakening of the noise pathway (noise_bias/w13 RMS ratio 0.129 vs the dense
+  0.442; NoiseGenerator `to_noise` norm 0.309 vs 0.766). NOTE the gate cannot suppress noise
+  DIRECTLY — attention and the noise-carrying FFN are separate residual branches
+  (`x = x + attn(norm1(x)); x = x + ffn(norm2(x), z)`) — so any effect is indirect, via `x3` or
+  SiLU saturation in `w2(SiLU(x1+noise) * x3)`.
+
 - **RoPE mean-pool bias (MIN-4).** The compressed logit equals the block-average of the fine
   logits (`q·mean(k)=mean(q·k)`), a defensible summary — but averaging *RoPE-rotated* keys
   interferes destructively for high-wavenumber components, so the global summary is biased toward
