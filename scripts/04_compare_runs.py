@@ -38,6 +38,11 @@ def main() -> None:
     ap.add_argument("--n-boot", type=int, default=5000)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--reference", choices=["prob", "trend"], default="prob")
+    # Which model series to compare. "model" (default) = as-forecast, byte-identical to the
+    # pre-flag behaviour. "model_cal" = the spread-calibrated series written when
+    # eval.spread_calibration.enabled=true, for the calibration-attribution test (ADR-0007
+    # pre-registration, 2026-07-21). Both runs must have been evaluated with the flag on.
+    ap.add_argument("--series", choices=["model", "model_cal"], default="model")
     args = ap.parse_args()
 
     A, B = _load(args.run_a), _load(args.run_b)
@@ -49,9 +54,14 @@ def main() -> None:
             f"inits (A n={None if ta is None else ta.size}, B n={None if tb is None else tb.size})."
         )
 
-    keys = sorted(k for k in A if k.endswith("|model") and k in B)
+    suffix = f"|{args.series}"
+    keys = sorted(k for k in A if k.endswith(suffix) and k in B)
     if not keys:
-        raise SystemExit("no overlapping (variable, lead) cells between the two runs")
+        raise SystemExit(
+            f"no overlapping (variable, lead) cells with series '{args.series}' between the two "
+            "runs" + ("" if args.series == "model" else
+                      " -- re-run 03_evaluate.py with eval.spread_calibration.enabled=true")
+        )
 
     rows = []
     for km in keys:
@@ -77,10 +87,14 @@ def main() -> None:
     print(f"B (candidate)= {args.run_b}")
     print(f"reference    = climatology_{args.reference};  paired moving-block bootstrap "
           f"(block_len={args.block_len}, n_boot={args.n_boot})")
+    print(f"series       = {args.series}"
+          + ("  [SPREAD-CALIBRATED: upper bound on the calibration share, not a real model]"
+             if args.series == "model_cal" else ""))
     print("delta = CRPSS_B - CRPSS_A;  delta > 0 means B more skilful\n")
     print(out.to_string(index=False, float_format=lambda v: f"{v:.5f}"))
 
-    dest = args.run_b / "paired_comparison_vs_A.csv"
+    dest = args.run_b / ("paired_comparison_vs_A.csv" if args.series == "model"
+                         else f"paired_comparison_vs_A_{args.series}.csv")
     out.to_csv(dest, index=False)
     print(f"\nSaved: {dest}")
 
