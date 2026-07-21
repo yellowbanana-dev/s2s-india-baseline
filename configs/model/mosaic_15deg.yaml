@@ -25,7 +25,15 @@ bottleneck_nside: 32
 bottleneck_dim: 256
 bottleneck_num_heads: 8
 bottleneck_depth: 2
-bottleneck_block_attn_size: 12288   # 12288/12288 = 1 block = dense global at the bottleneck
+# MIN-5 (review 2026-07-14): 12288/12288 = 1 block, so the LOCAL branch here is dense global --
+# but sparse_every=1 applies to EVERY UNetStage including the bottleneck (mosaic.py UNetStage),
+# so each bottleneck block ALSO builds the compressed branch and the 3-way strategy gate. The
+# bottleneck is therefore a SUPERSET of dense attention (dense + 192-token compressed summary +
+# gate), not plain dense. Confirmed empirically: a 6-block model (enc 2 + bottleneck 2 + dec 2)
+# has 6 strategy-gate tensors in its checkpoint. Describe it as such in the thesis.
+# NOT changed to block_attn_only=True: that would drop to_strategy_combine_mlp from the
+# bottleneck blocks and break state_dict compatibility with the calibrated 1.5deg checkpoint.
+bottleneck_block_attn_size: 12288
 
 k_neighbors: 8
 qk_norm: false

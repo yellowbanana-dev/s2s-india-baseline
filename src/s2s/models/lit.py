@@ -66,6 +66,17 @@ class S2SLitModule(L.LightningModule):
                  longitude=None):
         super().__init__()
         self.cfg = cfg
+        if longitude is None and str(getattr(cfg.model, "name", "patch_vit")) == "mosaic":
+            # MIN-6 (review 2026-07-14): the old fallback silently fabricated a 64-column
+            # 5.625deg grid. Mosaic builds its HEALPix interpolation grid from these
+            # longitudes, so at 1.5deg (240 lons) a caller that forgets would get a
+            # wrong-grid model that may only fail at checkpoint load -- or not at all in a
+            # fresh train. patch_vit never reads longitude, so None stays legal there.
+            raise ValueError(
+                "S2SLitModule(longitude=...) is REQUIRED for model=mosaic: the HEALPix "
+                "interpolation grid must match the data's true longitudes (pass dm.lon). "
+                "The previous fallback silently assumed a 64-column 5.625deg grid."
+            )
         self.model = _build_backbone(
             in_channels, out_channels, lead, cfg,
             np.asarray(latitude),

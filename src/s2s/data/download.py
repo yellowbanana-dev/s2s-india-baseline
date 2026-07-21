@@ -82,6 +82,16 @@ def verify_pull(ds: xr.Dataset, cfg) -> None:
     else:
         assert lat_max < 90.0, f"no-poles grid ({nlat} lats) must exclude poles; max|lat|={lat_max}"
 
+    # --- latitude ordering (MIN-8, review 2026-07-14). scripts/03_evaluate.py boxes with
+    # slice(min, max), which returns an EMPTY selection on a descending-lat store, and
+    # s2s.eval.regrid requires ascending. WB2 is ascending, but the store is new, so pin it. ---
+    lat_vals = np.asarray(ds.latitude.values)
+    assert lat_vals[0] < lat_vals[-1], (
+        f"latitude must be ASCENDING (south->north); got first={lat_vals[0]} "
+        f"last={lat_vals[-1]}. A descending-lat store makes slice(min,max) selections empty "
+        "in scripts/03_evaluate.py and breaks s2s.eval.regrid."
+    )
+
     # --- continuous 6-hourly time axis, no gaps ---
     dt_h = np.diff(ds.time.values).astype("timedelta64[h]").astype(int)
     uniq = np.unique(dt_h)

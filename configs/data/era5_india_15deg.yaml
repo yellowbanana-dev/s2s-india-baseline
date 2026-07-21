@@ -44,7 +44,11 @@ history_weeks: 2               # weeks of past state fed as input
 splits:
   train: [1979, 2012]
   val:   [2013, 2017]
-  test:  [2018, 2023]
+  test:  [2018, 2023]          # MIN-10: the WB2 store ends 2023-01-10, so this is really
+                               # 2018-2022 plus ~1 week of 2023. Pre-existing at 5.625deg (same
+                               # store family) and identical across resolutions, so comparisons
+                               # are unaffected -- but the thesis text must say
+                               # "2018-2022 (+1 week of 2023)", not "2018-2023".
   embargo_weeks: 4             # gap between blocks to kill autocorrelation leakage
 
 train_stride_days: 1
