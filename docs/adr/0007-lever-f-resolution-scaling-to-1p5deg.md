@@ -69,6 +69,59 @@ the f3 comparison is interpreted, the headline 1.5°-vs-5.625° readout is made 
   ceiling only if the COMMON-GRID 1.5° CRPSS exceeds the 5.625° baseline with paired-bootstrap-
   separated CIs. A native-grid-only lift does not qualify.
 
+## f3 OUTCOME (2026-07-20) — resolution scaling did NOT beat the 5.625° baseline
+
+Executed under the pre-registered protocol above. Both checkpoints scored with
+`eval.common_grid={resolution_deg: 5.625}`; the 5.625° baseline's identity control reproduced
+its native values to <5e-5 (t2m wk3 0.22392 vs 0.2239), confirming the comparison is sound.
+Paired moving-block bootstrap on the CRPSS difference (`scripts/04_compare_runs.py`),
+A = 5.625° `mosaic_fix45`, B = 1.5°:
+
+| variable | lead | CRPSS 5.625° | CRPSS 1.5° | Δ (B−A) | 95% CI | verdict |
+|---|---|---|---|---|---|---|
+| t2m    | wk3 | 0.2239 | 0.1984 | −0.0255 | [−0.0444, −0.0083] | **1.5° significantly WORSE** |
+| t2m    | wk4 | 0.2083 | 0.1928 | −0.0156 | [−0.0355, +0.0082] | indistinguishable |
+| precip | wk3 | 0.0891 | 0.0903 | +0.0012 | [−0.0225, +0.0232] | indistinguishable |
+| precip | wk4 | 0.0832 | 0.0469 | −0.0364 | [−0.0542, −0.0176] | **1.5° significantly WORSE** |
+
+0/4 gate cells better, 2/4 significantly worse. **Per the conclusion rule above, resolution is
+NOT credited as the ceiling.** Both models individually clear the CRPSS>0 gate against
+probabilistic climatology; the 1.5° model simply does not improve on the existing baseline.
+
+Note the native-grid comparison was misleading in the *opposite* direction to naive intuition:
+the 1.5° model scores HIGHER on the common grid (t2m wk3 0.1675 native → 0.1984 common) because
+its native target is intrinsically harder. Native-grid CRPSS understated it; either way the two
+were never comparable, which is what MAJ-3 exists to prevent.
+
+### Attribution is NOT established — do not write this up as "intrinsic predictability"
+
+The Consequences bullet below says a null implies intrinsic S2S predictability is the limit.
+**That inference is not supported by this evidence**, because two variables changed alongside
+resolution:
+
+1. **Attention structure (MAJ-1).** The 1.5° model runs local+compressed attention (each token
+   sees 1/96 of the domain at full resolution, the rest at 64:1 compression); the 5.625°
+   baseline runs *dense global attention in every layer*. These are different architectures.
+2. **Ensemble calibration.** The 1.5° model is systematically under-dispersed — t2m
+   spread-error ratio 0.77–0.84 across all leads vs 0.96–1.03 for the baseline — which inflates
+   CRPS independently of resolution. precip wk4 is the extreme case (SER 0.639, CRPSS collapsing
+   to 0.0469 between wk3=0.0903 and wk5=0.0771); that single-lead collapse looks anomalous
+   rather than physical and warrants separate investigation.
+
+The discriminating experiment is the MAJ-2 control: the 5.625° config run with the SAME
+local+compressed approximation (`configs/model/mosaic_5p625_sparse.yaml`). If that control loses
+comparable skill versus the dense baseline, the f3 null is attributable to attention capacity,
+not resolution, and ADR-0007's headline conclusion must be rewritten accordingly.
+
+### Residual limitation of the common-grid protocol (precip)
+
+Coarsening equalises the GRID but not the ANOMALY DEFINITION: anomalies and the `log1p`
+transform are computed at each store's native resolution *before* coarsening, and `log1p` does
+not commute with area-averaging. The two runs' climatology references differ by 0.8% for t2m
+(0.78005 vs 0.77382) but **11% for precip** (0.25281 vs 0.22730). The t2m comparison is sound;
+the precip comparison carries this caveat. A fully clean protocol would coarsen in physical
+space and recompute anomalies — deferred, and flagged here so it is not discovered downstream.
+
 ## Consequences
 
 - ~14× grid points → smaller batch and likely gradient checkpointing; memory validated in f2.
