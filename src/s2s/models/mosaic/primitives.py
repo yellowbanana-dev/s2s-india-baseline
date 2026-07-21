@@ -183,6 +183,16 @@ class MosaicAttention(nn.Module):
 
         q_heads = config.num_heads
         gqa_ratio = config.gqa_ratio
+        # MAJ-1 (review 2026-07-14): the lever-f PyTorch reference supports gqa_ratio=1 only.
+        # Both the local block path (block_attention) and the compressed-global path
+        # (_sdpa_cross) assume q and k/v share head count; GQA (kv_heads < q_heads) would hit
+        # an opaque SDPA shape error under the (flash_attn-absent) fallback. Grouped-query
+        # attention belongs to the deferred Triton selection kernel, not this reference.
+        if gqa_ratio != 1:
+            raise ValueError(
+                f"MosaicAttention (ADR-0007 PyTorch reference) supports gqa_ratio=1 only; "
+                f"got gqa_ratio={gqa_ratio}."
+            )
         dim = config.dim
         qkv_compress_ratio = config.qkv_compress_ratio
         rope = config.rope
