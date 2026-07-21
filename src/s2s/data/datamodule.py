@@ -122,16 +122,31 @@ class S2SDataModule(L.LightningDataModule):
         self.val_dataset = S2SDataset(arrays["val"])
         self.test_dataset = S2SDataset(arrays["test"])
 
-    def _loader(self, dataset, shuffle: bool) -> DataLoader:
+    def _loader(self, dataset, shuffle: bool, drop_last: bool = False) -> DataLoader:
         return DataLoader(
             dataset,
             batch_size=int(self.cfg.train.batch_size),
             shuffle=shuffle,
             num_workers=int(self.cfg.train.num_workers),
+            drop_last=drop_last,
         )
 
     def train_dataloader(self):
-        return self._loader(self.train_dataset, shuffle=True)
+        # MIN-1 (review 2026-07-14): drop the final short batch on TRAIN only. Under gradient
+        # accumulation Lightning divides every micro-batch loss by accumulate_grad_batches, so
+        # a short final batch is weighted per-micro-batch rather than per-sample. Dropping it
+        # costs <= batch_size-1 samples per epoch and removes that skew.
+        #
+        # NOTE this does NOT make accumulation "exactly uniform", contrary to the review's
+        # wording: it equalises batch SIZES, but the batch COUNT still need not divide
+        # accumulate_grad_batches (e.g. 12398 samples, bs=4, acc=8 -> 3100 batches, remainder 4;
+        # with drop_last 3099 batches, remainder 3). The final optimizer step of each epoch is
+        # therefore still scaled down. That residual is one step in ~388 per epoch and is left
+        # as-is deliberately.
+        #
+        # val/test MUST keep drop_last=False -- dropping eval samples would silently change
+        # the reported metrics.
+        return self._loader(self.train_dataset, shuffle=True, drop_last=True)
 
     def val_dataloader(self):
         return self._loader(self.val_dataset, shuffle=False)

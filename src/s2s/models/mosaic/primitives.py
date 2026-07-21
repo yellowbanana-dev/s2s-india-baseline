@@ -42,6 +42,13 @@ from s2s.models.mosaic.utils import get_healpix_grid, get_neighbors, rad_to_xyz
 def block_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, block_size: int):
     # LOCAL MODIFICATION: SDPA fallback when flash_attn is not installed.
     # q, k, v: (batch, seq, heads, head_dim) — flash_attn layout.
+    if q.shape[2] != k.shape[2]:
+        # MIN-3 (review 2026-07-14): the SDPA fallback has no GQA broadcast, so unequal head
+        # counts would raise an opaque shape error (or diverge from flash_attn). Names gqa_ratio.
+        raise ValueError(
+            f"block_attention requires equal q/kv head counts (gqa_ratio=1); got q heads "
+            f"{q.shape[2]} vs k heads {k.shape[2]}."
+        )
     batch_size = q.shape[0]
     q, k, v = map(lambda x: rearrange(x, 'b (nb bs) h d -> (b nb) bs h d', bs=block_size), (q, k, v))
     if _FLASH_ATTN_AVAILABLE:
@@ -79,6 +86,13 @@ def _sdpa_cross(q, k, v):
     Flash layout in/out: (b, s, h, d). Assumes q and k/v share head count
     (gqa_ratio=1); memory-efficient (SDPA / flash never materialises the score matrix).
     """
+    if q.shape[2] != k.shape[2]:
+        # MIN-3 (review 2026-07-14): SDPA would otherwise fail with an opaque shape error, or
+        # silently differ from the flash_attn path. Names gqa_ratio so the cause is obvious.
+        raise ValueError(
+            f"_sdpa_cross requires equal q/kv head counts (gqa_ratio=1); got q heads "
+            f"{q.shape[2]} vs k heads {k.shape[2]}."
+        )
     q_, k_, v_ = [rearrange(t, 'b s h d -> b h s d') for t in (q, k, v)]
     o = F.scaled_dot_product_attention(q_, k_, v_)
     return rearrange(o, 'b h s d -> b s h d')
@@ -113,6 +127,16 @@ def mosaic_attn_func(
     # reuses the compressed result, so the gate still trains over 3 slots and dropping in
     # the real kernel later only sharpens the selection branch. (sparse_block_count and
     # attn_topk are unused here; they belong to that future kernel.)
+    if no_compression:
+        # MIN-2 (review 2026-07-14): the flag is accepted but the reference implementation has
+        # no uncompressed global path, so honouring it silently would still compress. Fail
+        # loudly instead. Config sets it false, so this is inert today.
+        raise NotImplementedError(
+            "no_compression=True is not supported by the lever-f PyTorch reference: the "
+            "global branch is always the compressed (block-mean-pooled) one. Set "
+            "no_compression=false, or use block_attn_only for a purely local model."
+        )
+
     if q.shape[1] % sparse_block_size != 0:
         raise ValueError(
             f"seq_len {q.shape[1]} not divisible by sparse_block_size {sparse_block_size}"
