@@ -236,6 +236,57 @@ baseline means the diagnostic is mis-specified, not that calibration explains an
 significantly-worse cells AND the SER anomaly (0.639), with CRPSS non-monotonic in lead
 (0.0903 / 0.0469 / 0.0771 at wk3/4/5). If under-dispersion explains any cell, this is the one.
 
+## Spread-calibration attribution OUTCOME (2026-07-21) — the f3 deficit is NOT resolution
+
+Executed under the pre-registration above. Sanity gate first: the as-forecast paired comparison
+reproduced the published f3 deltas (t2m wk3 -0.0255, precip wk4 -0.0364, both CIs excluding 0),
+confirming these eval dirs are comparable to the v3 runs. Falsifier: `spread_error_ratio_cal`
+= 1.0 to 2.2e-16 at every cell; the near-calibrated 5.625 deg baseline moved at most 0.0058 CRPSS
+(at precip wk4, where its own SER is 0.881 — the movement tracks SER deviation and is ~0.0002
+where SER ~= 1). Recorded honestly: 0.0058 marginally exceeds the registered "<= ~0.005" bound,
+but the bound exists to catch a MIS-SPECIFIED diagnostic, and the proportional, monotone response
+is the diagnostic working correctly. Judged PASS on intent.
+
+| cell | D native | D calibrated | ratio | registered verdict |
+|---|---|---|---|---|
+| t2m wk3 | -0.0255 | -0.0120 | 0.47 | partial |
+| t2m wk4 | -0.0155 | **+0.0059** | 0.38 | partial (sign flips) |
+| precip wk3 | +0.0012 | -0.0008 | n/a | already tied |
+| **precip wk4** | **-0.0363** | **-0.0005** | **0.014** | **PRIMARILY UNDER-DISPERSION** |
+
+Paired moving-block bootstrap on the CALIBRATED series (`04_compare_runs.py --series model_cal`):
+the gate cells go from **2/4 significantly worse to 4/4 indistinguishable** (all CIs include 0).
+
+**What this establishes.** The f3 deficit is attributable to ensemble under-dispersion, NOT to
+resolution. Per the ADR-0007 conclusion rule resolution was already not credited as the ceiling;
+this additionally removes resolution as the explanation for the DEFICIT.
+
+**What it does NOT establish.** (1) It is an UPPER BOUND, as pre-registered — post-hoc rescaling
+uses the verification truth, which a trained model cannot; it does not show a genuinely trained
+1.5 deg model would reach parity. (2) "Indistinguishable" is not "identical": the calibrated t2m
+wk3 point estimate is still -0.0120 and the CIs are wide at n~256 weekly inits; a real deficit of
+that size could hide. (3) It does NOT exonerate the attention approximation — see below.
+
+### Mechanism: under-dispersion is downstream of an intact noise generator (Step A)
+
+`_diag_noise_path.py` on the CALIBRATED 1.5 deg checkpoint (epoch 12) vs the dense baseline:
+the noise pathway is **structurally intact** — sparse/dense RMS ratio **0.7666**, i.e. comparable
+in magnitude to dense, and far from the collapsed 5.625 deg sparse control (0.129 vs dense 0.442,
+~0.29 relative). So the spread loss is NOT a dead NoiseGenerator; it arises downstream, in the
+gating/SiLU path of `w2(SiLU(x1 + noise_bias(z)) * x3)`.
+
+This matters for attribution: the MAJ-1 placeholder (`o_slc = o_cmp`) biases the 3-way strategy
+gate ~2:1 toward the mean-pooled, deliberately low-variance compressed branch at initialisation.
+Gate bias -> smoothed low-variance features -> suppressed effective noise -> under-dispersion is
+a coherent causal chain, and Step A is consistent with it (generator intact, suppression
+downstream). It is SUGGESTIVE, not proven: no measurement yet links gate weights to spread.
+
+**Consequence for the thesis.** Calibration and attention are plausibly ONE mechanism with
+attention upstream, not two independent confounds. The defensible position is: resolution is
+exonerated as the cause of the f3 deficit; the residual cause is ensemble under-dispersion, whose
+most likely origin is a KNOWN, FIXABLE implementation artifact (the deferred-selection gate
+degeneracy) rather than an intrinsic limit of 1.5 deg forecasting.
+
 ## Consequences
 
 - ~14× grid points → smaller batch and likely gradient checkpointing; memory validated in f2.
