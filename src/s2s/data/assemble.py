@@ -50,9 +50,22 @@ _SST_INDEX_BOXES = {
 
 def sst_index_names(cfg) -> list[str]:
     names = list(getattr(cfg.data, "sst_indices", None) or [])
-    if not names or _SST_VAR not in list(cfg.data.variables.predictors.surface or []):
+    if not names:
         return []
-    return [n for n in names if n in _SST_INDEX_BOXES]
+    # MIN-7 (review 2026-07-14): unknown names were silently dropped, so a typo
+    # (e.g. "nino_34" for "nino34") disabled the lever with no error and produced a
+    # quiet null result. Validate BEFORE the predictor gate so config typos surface
+    # even when SST is not wired in as a predictor.
+    unknown = [n for n in names if n not in _SST_INDEX_BOXES]
+    if unknown:
+        raise ValueError(
+            f"unknown sst_indices {unknown}; valid names are {sorted(_SST_INDEX_BOXES)}. "
+            "Unknown names used to be dropped silently, which turns the lever off without "
+            "any error."
+        )
+    if _SST_VAR not in list(cfg.data.variables.predictors.surface or []):
+        return []
+    return names
 
 
 def sst_index_lags(cfg) -> list[int]:
@@ -71,6 +84,18 @@ def _box_mean(sst_da, lat_min, lat_max, lon_min, lon_max):
         (lat >= min(lat_min, lat_max)) & (lat <= max(lat_min, lat_max))
         & (lon >= lon_min) & (lon <= lon_max)
     )
+    # MIN-7 (review 2026-07-14): an EMPTY box makes where() all-NaN, the weighted mean NaN,
+    # and nan_to_num downstream turns it into a silently all-zero index channel -- i.e. a
+    # quiet null result. The boxes are defined on a 0-360 longitude convention, so a
+    # -180..180 store empties them. Confirmed empirically by the reviewer.
+    if int(mask.sum()) == 0:
+        raise ValueError(
+            f"SST index box (lat {lat_min}..{lat_max}, lon {lon_min}..{lon_max}) selects NO "
+            f"grid cells. Store longitudes span {float(lon.min())}..{float(lon.max())} and "
+            "latitudes span "
+            f"{float(lat.min())}..{float(lat.max())}. Index boxes use the 0-360 longitude "
+            "convention; a -180..180 store yields an empty box and a silently zero channel."
+        )
     return sst_da.where(mask).weighted(np.cos(np.deg2rad(lat))).mean(
         ("latitude", "longitude"), skipna=True
     )
@@ -88,7 +113,18 @@ def compute_sst_index_series(ds, cfg) -> np.ndarray:
         for (la0, la1, lo0, lo1, sign) in _SST_INDEX_BOXES[name]:
             bm = sign * _box_mean(sst, la0, la1, lo0, lo1)
             total = bm if total is None else total + bm
-        series.append(np.nan_to_num(total.values.astype(np.float32), nan=0.0))
+        # MIN-7: even with a non-empty box, an all-land (all-NaN) box or a mostly-missing
+        # SST field would be flattened to zeros by nan_to_num below. Require the index to be
+        # finite for the large majority of timesteps before that flattening hides it.
+        vals = total.values.astype(np.float32)
+        finite_frac = float(np.isfinite(vals).mean()) if vals.size else 0.0
+        if finite_frac < 0.95:
+            raise ValueError(
+                f"SST index '{name}' is finite for only {finite_frac:.1%} of timesteps "
+                "(require >=95%). nan_to_num would turn this into a near-constant zero "
+                "channel, silently disabling the lever instead of failing."
+            )
+        series.append(np.nan_to_num(vals, nan=0.0))
     return np.stack(series, axis=0)
 
 
