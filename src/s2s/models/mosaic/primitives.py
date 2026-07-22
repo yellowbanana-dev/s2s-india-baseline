@@ -99,11 +99,64 @@ def _sdpa_cross(q, k, v):
     return rearrange(o, 'b h s d -> b s h d')
 
 
+def selection_attention(q, k, v, query_block_size: int, sparse_block_size: int,
+                        sparse_block_count: int):
+    """Fine top-k SELECTION branch, per QUERY-BLOCK (ADR-0010).
+
+    All queries in a block of `query_block_size` share ONE selected key-block set, chosen by
+    scoring the block-mean query against the block-mean (compressed) keys. Each selected key
+    block contributes its FINE (uncompressed) tokens. This is the NSA formulation, and it is
+    what makes the branch tractable: per-TOKEN selection needs a
+    (b, seq, h, k*bs, d) gather (~1e11 elements at nside=64) whereas per-BLOCK selection
+    processes one query block at a time, bounded by (b, h, query_block_size, k*bs).
+
+    Cost at nside=64 (seq=49152, qb=512, k=16, bs=64): 5.0e7 score-pairs vs 2.4e9 for dense
+    global attention (48x cheaper) and 3.8e7 for the compressed branch -- i.e. affordable.
+
+    q, k, v: (b, seq, h, d). Returns (b, seq, h, d). Assumes gqa_ratio=1 (guarded by caller).
+    """
+    b, seq, h, d = q.shape
+    n_kv_blocks = seq // sparse_block_size
+    n_sel = min(int(sparse_block_count), n_kv_blocks)
+    if n_sel <= 0:
+        raise ValueError(f"sparse_block_count must be >= 1 to use the selection branch")
+
+    # Block-mean keys drive BOTH the selection scores and (in the caller) the compressed branch.
+    kc = reduce(k, 'b (nb bs) h d -> b nb h d', 'mean', bs=sparse_block_size)
+    # Block-mean queries: one representative per query block (the NSA sharing trick).
+    qb = reduce(q, 'b (nq qs) h d -> b nq h d', 'mean', qs=query_block_size)
+
+    # Selection scores: (b, n_qblocks, h, n_kv_blocks) -> top-n_sel key blocks per query block.
+    scores = torch.einsum('bqhd,bkhd->bqhk', qb, kc) * (d ** -0.5)
+    with torch.no_grad():
+        top = scores.topk(k=n_sel, dim=-1, largest=True).indices  # (b, nq, h, n_sel)
+
+    kb = rearrange(k, 'b (nb bs) h d -> b nb bs h d', bs=sparse_block_size)
+    vb = rearrange(v, 'b (nb bs) h d -> b nb bs h d', bs=sparse_block_size)
+    n_q_blocks = seq // query_block_size
+
+    outs = []
+    for i in range(n_q_blocks):
+        q_i = q[:, i * query_block_size:(i + 1) * query_block_size]        # (b, qs, h, d)
+        idx = top[:, i]                                                    # (b, h, n_sel)
+        # Gather the selected FINE key/value blocks for this query block only.
+        gi = idx.permute(0, 2, 1)[..., None, None]                         # (b, n_sel, h, 1, 1)
+        gi_k = gi.expand(-1, -1, -1, sparse_block_size, d)                 # (b, n_sel, h, bs, d)
+        kb_t = kb.permute(0, 1, 3, 2, 4)                                   # (b, nb, h, bs, d)
+        vb_t = vb.permute(0, 1, 3, 2, 4)
+        k_sel = torch.gather(kb_t, 1, gi_k)                                # (b, n_sel, h, bs, d)
+        v_sel = torch.gather(vb_t, 1, gi_k)
+        k_sel = rearrange(k_sel, 'b n h bs d -> b (n bs) h d')             # (b, n_sel*bs, h, d)
+        v_sel = rearrange(v_sel, 'b n h bs d -> b (n bs) h d')
+        outs.append(_sdpa_cross(q_i, k_sel, v_sel))                        # (b, qs, h, d)
+    return torch.cat(outs, dim=1)
+
+
 def mosaic_attn_func(
     q, k, v,
     weight_ba_cmp_slc,
     block_attn_size, sparse_block_size, sparse_block_count,
-    block_attn_only, no_compression=False,
+    block_attn_only, no_compression=False, selection=False,
 ):
     if q.shape[1] % block_attn_size != 0:
         raise ValueError(
@@ -121,13 +174,12 @@ def mosaic_attn_func(
     # sparse_block_size), combined with the LOCAL block branch by the learned 3-way
     # strategy gate (weight_ba_cmp_slc).
     #
-    # The fine top-k SELECTION branch (per-query gather of selected blocks' fine tokens)
-    # is memory-infeasible in pure PyTorch at this scale -- that per-query gather is
-    # exactly what the Triton kernel exists for -- so it is DEFERRED to the vendored
-    # kernel (Option 1, pursued only if f1 shows promise). Until then the selection slot
-    # reuses the compressed result, so the gate still trains over 3 slots and dropping in
-    # the real kernel later only sharpens the selection branch. (sparse_block_count and
-    # attn_topk are unused here; they belong to that future kernel.)
+    # SELECTION BRANCH (corrected 2026-07-21, ADR-0010). The earlier claim that the fine
+    # top-k branch is "memory-infeasible in pure PyTorch" was WRONG: it holds only for
+    # PER-TOKEN selection (which is what the vendored attn_topk computes, ~1e11 elements at
+    # nside=64). NSA selects per QUERY-BLOCK -- queries in a block share one key-block set --
+    # which is bounded and ~48x cheaper than dense global attention. See selection_attention().
+    # Enabled by selection=True (default False keeps the legacy placeholder, byte-identical).
     if no_compression:
         # MIN-2 (review 2026-07-14): the flag is accepted but the reference implementation has
         # no uncompressed global path, so honouring it silently would still compress. Fail
@@ -150,9 +202,17 @@ def mosaic_attn_func(
         # gate_slots=2 (ADR-0009): the duplicate selection slot is gone, so the gate is a
         # genuine local-vs-compressed choice and starts unbiased at 1/2 - 1/2.
         return w[0] * o_ba + w[1] * o_cmp
-    # Legacy 3-slot placeholder: selection duplicates compressed (MAJ-1), so the effective
-    # compressed weight is w1+w2 and the model starts ~2:1 biased toward compressed.
-    o_slc = o_cmp
+    if selection:
+        # ADR-0010: the third slot is a REAL fine top-k branch, so the 3-way gate is genuine
+        # (three distinct tensors) and the MAJ-1 2:1 init bias is gone -- fixed by making the
+        # slot real rather than by deleting it (gate_slots=2).
+        o_slc = selection_attention(
+            q, k, v, block_attn_size, sparse_block_size, sparse_block_count
+        )
+    else:
+        # Legacy 3-slot placeholder: selection duplicates compressed (MAJ-1), so the effective
+        # compressed weight is w1+w2 and the model starts ~2:1 biased toward compressed.
+        o_slc = o_cmp
     return w[0] * o_ba + w[1] * o_cmp + w[2] * o_slc
 
 
@@ -248,7 +308,16 @@ class MosaicAttention(nn.Module):
         # deliberately low-variance mean-pooled branch (ADR-0007). 2 = duplicate slot removed
         # (local, compressed), restoring a 1/2-1/2 start. Default 3 keeps every existing
         # checkpoint loadable; 2 changes the gate layer shape and is a NEW experiment (ADR-0009).
+        # ADR-0010: real fine top-k selection branch (default OFF -> byte-identical legacy
+        # placeholder, and every existing checkpoint keeps loading).
+        self.selection = bool(getattr(config, "selection", False))
         self.gate_slots = int(getattr(config, "gate_slots", 3))
+        if self.selection and self.gate_slots != 3:
+            raise ValueError(
+                "selection=True requires gate_slots=3 (local, compressed, selection); "
+                f"got gate_slots={self.gate_slots}. gate_slots=2 DELETES the selection slot, "
+                "which is the alternative fix to the same MAJ-1 defect -- pick one."
+            )
         if self.gate_slots not in (2, 3):
             raise ValueError(
                 f"gate_slots must be 2 (selection slot removed) or 3 (legacy placeholder), "
@@ -291,6 +360,7 @@ class MosaicAttention(nn.Module):
             sparse_block_count=self.sparse_block_count,
             block_attn_only=self.block_attn_only,
             no_compression=self.no_compression,
+            selection=self.selection,
         )
 
         output = rearrange(output, 'b s h d -> s b (h d)')

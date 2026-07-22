@@ -121,6 +121,7 @@ class MosaicBackbone(nn.Module):
             rmsnorm_elementwise_affine=True,
             no_compression=bool(getattr(mc, "no_compression", False)),
             gate_slots=int(getattr(mc, "gate_slots", 3)),
+            selection=bool(getattr(mc, "selection", False)),
         )
 
         # seed threads cfg.seed (Fix 8/M3): the noise RNG must differ across

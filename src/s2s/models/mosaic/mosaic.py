@@ -81,6 +81,7 @@ class ModelConfig:
     rmsnorm_elementwise_affine: bool = True
     no_compression: bool = False
     gate_slots: int = 3
+    selection: bool = False
 
 
 @dataclass
@@ -100,6 +101,7 @@ class _MergedStageConfig:
     drop_rate: float
     rmsnorm_elementwise_affine: bool
     gate_slots: int = 3
+    selection: bool = False
 
 
 def _merge_configs(config: ModelConfig, stage_cfg) -> _MergedStageConfig:
@@ -118,6 +120,7 @@ def _merge_configs(config: ModelConfig, stage_cfg) -> _MergedStageConfig:
         drop_rate=config.drop_rate,
         rmsnorm_elementwise_affine=config.rmsnorm_elementwise_affine,
         gate_slots=config.gate_slots,
+        selection=config.selection,
     )
 
 

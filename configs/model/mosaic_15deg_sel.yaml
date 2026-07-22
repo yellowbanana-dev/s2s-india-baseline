@@ -1,0 +1,52 @@
+# Mosaic at 1.5 deg with the REAL fine top-k SELECTION branch (ADR-0010 experiment).
+# Identical to mosaic_15deg.yaml except selection=true: the third gate slot becomes a
+# genuine per-query-block top-k branch instead of a duplicate of compressed, so the
+# 3-way gate is real and the MAJ-1 2:1 init bias is fixed by making the slot REAL
+# (the alternative to gate_slots=2, which deletes it). No layer shapes change.
+name: mosaic
+
+# HEALPix: nside=64 -> npix=49152 ~= 1.7x the 240x121=29040 grid (matches the ~1.5x
+# density principle used at 5.625 deg). Dense global attention here is infeasible
+# (~49k tokens), so the CG stage uses the block-sparse path (local block + compressed
+# global; see primitives.mosaic_attn_func).
+nside: 64
+dim: 128
+num_heads: 8                # head_dim = 16
+encoder_depth: 2
+decoder_depth: 2
+block_attn_size: 512        # local block: 49152/512 = 96 blocks (must divide npix)
+sparse_block_size: 64       # compression block: 49152/64 = 768 compressed tokens
+sparse_block_count: 16      # top-k blocks (used only by the future Triton selection kernel)
+mlp_ratio: 4.0
+gqa_ratio: 1
+
+# Bottleneck: one 2x HEALPix downsample (64 -> 32), npix=12288, dense global attention.
+# If this OOMs / is too slow in the dry run, drop bottleneck_nside to 16 (needs a 4x
+# downsample -- verify HEALPixDownsample supports it) or make the bottleneck sparse too.
+bottleneck_nside: 32
+bottleneck_dim: 256
+bottleneck_num_heads: 8
+bottleneck_depth: 2
+# MIN-5 (review 2026-07-14): 12288/12288 = 1 block, so the LOCAL branch here is dense global --
+# but sparse_every=1 applies to EVERY UNetStage including the bottleneck (mosaic.py UNetStage),
+# so each bottleneck block ALSO builds the compressed branch and the 3-way strategy gate. The
+# bottleneck is therefore a SUPERSET of dense attention (dense + 192-token compressed summary +
+# gate), not plain dense. Confirmed empirically: a 6-block model (enc 2 + bottleneck 2 + dec 2)
+# has 6 strategy-gate tensors in its checkpoint. Describe it as such in the thesis.
+# NOT changed to block_attn_only=True: that would drop to_strategy_combine_mlp from the
+# bottleneck blocks and break state_dict compatibility with the calibrated 1.5deg checkpoint.
+bottleneck_block_attn_size: 12288
+
+k_neighbors: 8
+qk_norm: false
+rope: true
+rope_theta: 10000
+sparse_every: 1             # >0 -> every CG block uses the block-sparse path (local+compressed)
+qkv_compress_ratio: 1
+no_compression: false
+drop_rate: 0.1
+noise_dim: 32
+lr: 3.0e-5                  # Mosaic zero-init-residual LR override (see ADR-0003/0004)
+
+# Real fine top-k selection branch (ADR-0010). Requires gate_slots=3 (the default).
+selection: true
